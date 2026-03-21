@@ -378,7 +378,8 @@ export async function buildDeployZip(components: MetadataComponent[]): Promise<B
 export async function deployToOrg(
   org: SfOrg,
   components: MetadataComponent[],
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  options?: { checkOnly?: boolean }
 ): Promise<DeployResult> {
   if (!org.accessToken || !org.instanceUrl) {
     return {
@@ -403,7 +404,7 @@ export async function deployToOrg(
     stateDetail: "Uploading deployment package to Salesforce...",
   });
 
-  const deployId = await initiateRestDeploy(org, zipBuffer);
+  const deployId = await initiateRestDeploy(org, zipBuffer, options?.checkOnly);
 
   if (!deployId) {
     return {
@@ -427,14 +428,14 @@ export async function deployToOrg(
 // REST DEPLOY INITIATION
 // ============================================================
 
-async function initiateRestDeploy(org: SfOrg, zipBuffer: Buffer): Promise<string | null> {
+async function initiateRestDeploy(org: SfOrg, zipBuffer: Buffer, checkOnly?: boolean): Promise<string | null> {
   const boundary = "----GS_ImproveSFAgent_Deploy_" + Date.now();
 
   const deployOptions = JSON.stringify({
     deployOptions: {
       allowMissingFiles: false,
       autoUpdatePackage: false,
-      checkOnly: false,
+      checkOnly: checkOnly || false,
       ignoreWarnings: false,
       performRetrieve: false,
       purgeOnDelete: false,

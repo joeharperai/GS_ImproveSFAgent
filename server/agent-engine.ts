@@ -8,6 +8,88 @@ const client = new Anthropic();
 
 type SSEEmitter = (step: AgentStep) => void;
 
+// ============================================================
+// ORG CONTEXT BUILDER — feeds discovery data into AI prompts
+// ============================================================
+export function buildOrgContext(orgId: number): string {
+  const org = storage.getOrg(orgId);
+  if (!org) return "";
+
+  // Get latest completed scan
+  const scans = storage.getOrgScans(orgId);
+  const latestScan = scans.find(s => s.status === "completed");
+  if (!latestScan) return "";
+
+  const inventory = storage.getOrgInventory(orgId);
+  if (inventory.length === 0) return "";
+
+  const clouds: string[] = latestScan.cloudsDetectedJson ? JSON.parse(latestScan.cloudsDetectedJson) : [];
+  const packages: any[] = latestScan.packagesJson ? JSON.parse(latestScan.packagesJson) : [];
+  const edition = org.orgEdition || "Unknown";
+
+  // Summarize inventory by category
+  const categoryCounts: Record<string, number> = {};
+  const categoryExamples: Record<string, string[]> = {};
+  for (const item of inventory) {
+    categoryCounts[item.category] = (categoryCounts[item.category] || 0) + 1;
+    if (!categoryExamples[item.category]) categoryExamples[item.category] = [];
+    if (categoryExamples[item.category].length < 5) {
+      categoryExamples[item.category].push(item.apiName);
+    }
+  }
+
+  const customObjects = categoryExamples["CustomObject"] || [];
+  const apexClasses = categoryExamples["ApexClass"] || [];
+  const apexTriggers = inventory.filter(i => i.category === "ApexTrigger");
+  const flows = categoryExamples["Flow"] || [];
+
+  const triggerSummary = apexTriggers
+    .map(t => {
+      const parentObj = t.parentApiName || "unknown object";
+      return `${t.apiName} (on ${parentObj})`;
+    })
+    .slice(0, 5);
+
+  const packageSummary = packages.length > 0
+    ? packages.map((p: any) => `${p.name || p.Name} (${p.namespace || p.NamespacePrefix || "N/A"}, v${p.version || p.VersionNumber || "?"})`).join(", ")
+    : "None";
+
+  // Build edition constraints
+  let editionConstraints = "";
+  const edLower = edition.toLowerCase();
+  if (edLower.includes("professional")) {
+    editionConstraints = `- Edition [Professional] does NOT support Apex code or Apex triggers. Only use declarative solutions: Flows, Custom Objects, Custom Fields, Validation Rules, Permission Sets.
+- DO NOT generate ApexClass, ApexTrigger, or LWC components for this org.`;
+  } else if (edLower.includes("group")) {
+    editionConstraints = `- Edition [Group] has very limited custom objects and does NOT support Apex code.
+- DO NOT generate ApexClass, ApexTrigger, or LWC components for this org.`;
+  } else if (edLower.includes("essentials")) {
+    editionConstraints = `- Edition [Essentials] does NOT support Apex code and has limited customization.
+- DO NOT generate ApexClass, ApexTrigger, or LWC components for this org.`;
+  } else {
+    editionConstraints = `- Edition [${edition}] supports: Apex, Flows, Custom Objects, LWC, Validation Rules, Permission Sets.`;
+  }
+
+  return `
+ORG CONTEXT (from discovery scan):
+Edition: ${edition}
+Active Clouds: ${clouds.length > 0 ? clouds.join(", ") : "None detected"}
+Installed Packages: ${packageSummary}
+Existing Custom Objects: ${customObjects.join(", ")} (${categoryCounts["CustomObject"] || 0} total)
+Existing Apex Classes: ${apexClasses.join(", ")} (${categoryCounts["ApexClass"] || 0} total)
+Existing Apex Triggers: ${triggerSummary.join(", ") || "None"} (${categoryCounts["ApexTrigger"] || 0} total)
+Existing Flows: ${flows.join(", ")} (${categoryCounts["Flow"] || 0} total)
+
+CRITICAL CONSTRAINTS:
+- DO NOT create components that require packages not listed above
+- DO NOT create duplicate triggers on objects that already have triggers (consolidate instead)
+- DO NOT use managed package objects/fields unless the package is installed
+- If the requirement references CPQ/SBQQ objects, verify SBQQ package is installed above
+- If the requirement references FSC/FinServ objects, verify Financial Services Cloud is detected
+${editionConstraints}
+`.trim();
+}
+
 function makeStep(phase: string, action: string, detail: string, status: AgentStep["status"]): AgentStep {
   return {
     id: randomUUID(),
@@ -140,7 +222,8 @@ export interface ArchitectReviewResult {
 export async function runArchitectReview(
   requirement: Requirement,
   runId?: number,
-  emit?: SSEEmitter
+  emit?: SSEEmitter,
+  orgContext?: string
 ): Promise<ArchitectReviewResult> {
   if (runId && emit) {
     emitAndLog(runId, emit, makeStep("architect_review", "start", "Architectural governance review in progress — challenging design decisions...", "thinking"));
@@ -162,7 +245,7 @@ Title: ${requirement.title}
 Description: ${requirement.description}
 Category: ${requirement.category}
 Priority: ${requirement.priority}
-
+${orgContext ? `\n${orgContext}\n` : ""}
 Analyze this requirement against ALL governance rules and respond with JSON only (no markdown, no code fences):
 {
   "overallVerdict": "pass | pass_with_warnings | fail",
@@ -283,7 +366,8 @@ async function runAnalysis(
   runId: number,
   requirement: Requirement,
   architectReview: ArchitectReviewResult,
-  emit: SSEEmitter
+  emit: SSEEmitter,
+  orgContext?: string
 ): Promise<any> {
   emitAndLog(runId, emit, makeStep("analyzing", "start", "Analyzing requirement with AI architect (governance-aware)...", "thinking"));
   storage.updateAgentRun(runId, { phase: "analyzing" });
@@ -313,7 +397,7 @@ Title: ${requirement.title}
 Description: ${requirement.description}
 Category: ${requirement.category}
 Priority: ${requirement.priority}
-
+${orgContext ? `\n${orgContext}\n` : ""}
 Respond with valid JSON only (no markdown, no code fences):
 {
   "summary": "2-3 sentence summary of what needs to be built",
@@ -389,7 +473,8 @@ async function runGeneration(
   runId: number,
   requirement: Requirement,
   analysisResult: any,
-  emit: SSEEmitter
+  emit: SSEEmitter,
+  orgContext?: string
 ): Promise<any[]> {
   emitAndLog(runId, emit, makeStep("generating", "start", "Generating governance-compliant Salesforce metadata and code...", "thinking"));
   storage.updateAgentRun(runId, { phase: "generating" });
@@ -411,7 +496,7 @@ DESCRIPTION: ${requirement.description}
 
 COMPONENTS TO BUILD:
 ${JSON.stringify(components, null, 2)}
-
+${orgContext ? `\n${orgContext}\n` : ""}
 For each component, generate the complete Salesforce Metadata API XML or Apex/LWC code. Respond with JSON only:
 {
   "generatedComponents": [
@@ -922,9 +1007,15 @@ export async function executeAgentRun(
 
   emitAndLog(runId, emit, makeStep("init", "start", `Agent started for: "${requirement.title}" → ${org.name}`, "info"));
 
+  // Build org context from discovery data (if available)
+  const orgContext = buildOrgContext(org.id);
+  if (orgContext) {
+    emitAndLog(runId, emit, makeStep("init", "org_context", "Loaded org context from discovery scan — AI prompts will be org-aware", "info"));
+  }
+
   try {
     // PHASE 0: Architectural Governance Review (NEW — runs before anything else)
-    const architectReview = await runArchitectReview(requirement, runId, emit);
+    const architectReview = await runArchitectReview(requirement, runId, emit, orgContext);
 
     if (!architectReview.approvedToGenerate) {
       // HALT — design has blockers
@@ -944,10 +1035,10 @@ export async function executeAgentRun(
     }
 
     // PHASE 1: Analyze (governance-aware)
-    const analysisResult = await runAnalysis(runId, requirement, architectReview, emit);
+    const analysisResult = await runAnalysis(runId, requirement, architectReview, emit, orgContext);
 
     // PHASE 2: Generate metadata (governance-compliant)
-    let components = await runGeneration(runId, requirement, analysisResult, emit);
+    let components = await runGeneration(runId, requirement, analysisResult, emit, orgContext);
 
     // PHASE 3+4+5: Deploy → Test → Fix retry loop
     let maxAttempts = 4; // initial + 3 retries
@@ -1022,5 +1113,120 @@ export async function executeAgentRun(
     });
     storage.updateRequirement(requirementId, { status: "failed" });
     emitAndLog(runId, emit, makeStep("complete", "error", `Agent error: ${err.message}`, "error"));
+  }
+}
+
+// ============================================================
+// VALIDATION RUN — checkOnly deploy (no tests/fix loops)
+// Phases: 0 (Architect Review) → 1 (Analysis) → 2 (Generation) → 3 (Deploy checkOnly)
+// ============================================================
+export async function executeValidationRun(
+  runId: number,
+  requirementId: number,
+  orgId: number | null,
+  emit: SSEEmitter
+): Promise<void> {
+  const requirement = storage.getRequirement(requirementId);
+  if (!requirement) {
+    emit(makeStep("init", "error", "Requirement not found", "error"));
+    return;
+  }
+
+  let org: SfOrg | undefined;
+  if (orgId) {
+    org = storage.getOrg(orgId);
+    if (!org) {
+      emit(makeStep("init", "error", "Target org not found", "error"));
+      return;
+    }
+  } else {
+    const orgs = storage.getOrgs();
+    org = orgs.find(o => o.status === "connected") || orgs[0];
+    if (!org) {
+      emit(makeStep("init", "error", "No org available for validation", "error"));
+      return;
+    }
+  }
+
+  storage.updateAgentRun(runId, { status: "running", orgId: org.id, phase: "init" });
+
+  emitAndLog(runId, emit, makeStep("init", "start", `Validation run started for: "${requirement.title}" → ${org.name} (checkOnly)`, "info"));
+
+  const orgContext = buildOrgContext(org.id);
+  if (orgContext) {
+    emitAndLog(runId, emit, makeStep("init", "org_context", "Loaded org context from discovery scan", "info"));
+  }
+
+  try {
+    // PHASE 0: Architectural review
+    const architectReview = await runArchitectReview(requirement, runId, emit, orgContext);
+
+    if (!architectReview.approvedToGenerate) {
+      storage.updateAgentRun(runId, {
+        status: "failed",
+        phase: "complete",
+        errorSummary: "Architectural review failed — blockers found",
+        completedAt: new Date().toISOString(),
+      });
+      emitAndLog(runId, emit, makeStep("complete", "blocked", "Validation HALTED: Architectural review found blocking violations.", "error"));
+      return;
+    }
+
+    // PHASE 1: Analysis
+    const analysisResult = await runAnalysis(runId, requirement, architectReview, emit, orgContext);
+
+    // PHASE 2: Generation
+    const components = await runGeneration(runId, requirement, analysisResult, emit, orgContext);
+
+    // PHASE 3: checkOnly deploy
+    emitAndLog(runId, emit, makeStep("deploying", "start", `Running checkOnly validation deploy for ${components.length} components...`, "thinking"));
+    storage.updateAgentRun(runId, { phase: "deploying" });
+
+    if (org.status !== "connected" || !org.accessToken) {
+      emitAndLog(runId, emit, makeStep("deploying", "skip", "Org not connected — cannot run live validation. Components generated successfully.", "warning"));
+
+      storage.createDeployment({
+        requirementId: requirement.id,
+        orgId: org.id,
+        status: "validated",
+        componentsJson: JSON.stringify(components.map((c: any) => c.id)),
+        logJson: JSON.stringify([{ timestamp: new Date().toISOString(), message: "Validation skipped — org not connected", level: "warning" }]),
+        startedAt: new Date().toISOString(),
+      });
+
+      storage.updateAgentRun(runId, { status: "success", phase: "complete", completedAt: new Date().toISOString() });
+      emitAndLog(runId, emit, makeStep("complete", "done", "Validation complete (simulated — org not connected).", "success"));
+      return;
+    }
+
+    const result = await deployToOrg(org, components, (progress) => {
+      const msg = progress.stateDetail || `Status: ${progress.status}`;
+      emitAndLog(runId, emit, makeStep("deploying", progress.done ? (progress.success ? "validate_success" : "validate_error") : "validate_progress", msg, progress.done ? (progress.success ? "success" : "error") : "info"));
+    }, { checkOnly: true });
+
+    const deployStatus = result.success ? "validated" : "validation_failed";
+
+    storage.createDeployment({
+      requirementId: requirement.id,
+      orgId: org.id,
+      status: deployStatus,
+      componentsJson: JSON.stringify(components.map((c: any) => c.id)),
+      logJson: JSON.stringify(result.errors.length > 0
+        ? result.errors.map(e => ({ timestamp: new Date().toISOString(), message: `${e.apiName}: ${e.problem}`, level: "error" }))
+        : [{ timestamp: new Date().toISOString(), message: "Validation passed", level: "success" }]),
+      startedAt: new Date().toISOString(),
+    });
+
+    if (result.success) {
+      storage.updateAgentRun(runId, { status: "success", phase: "complete", completedAt: new Date().toISOString() });
+      emitAndLog(runId, emit, makeStep("complete", "done", `Validation passed: ${components.length} components would deploy successfully.`, "success"));
+    } else {
+      const errSummary = result.errors.map(e => `${e.apiName}: ${e.problem}`).join("; ");
+      storage.updateAgentRun(runId, { status: "failed", phase: "complete", errorSummary: errSummary, completedAt: new Date().toISOString() });
+      emitAndLog(runId, emit, makeStep("complete", "failed", `Validation failed: ${result.errors.length} error(s).`, "error"));
+    }
+  } catch (err: any) {
+    storage.updateAgentRun(runId, { status: "failed", phase: "complete", errorSummary: err.message, completedAt: new Date().toISOString() });
+    emitAndLog(runId, emit, makeStep("complete", "error", `Validation error: ${err.message}`, "error"));
   }
 }

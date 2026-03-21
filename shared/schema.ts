@@ -29,6 +29,7 @@ export const sfOrgs = sqliteTable("sf_orgs", {
   customerId: integer("customer_id"),
   accessMode: text("access_mode").notNull().default("read_only"), // read_only | read_write
   orgType: text("org_type").notNull().default("sandbox"), // sandbox | production | developer
+  orgEdition: text("org_edition"), // Enterprise Edition, Professional Edition, Developer Edition, etc.
   status: text("status").notNull().default("disconnected"), // connected | disconnected | error
   connectedAt: text("connected_at"),
 });

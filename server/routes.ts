@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
-import { executeAgentRun, runArchitectReview } from "./agent-engine";
+import { executeAgentRun, executeValidationRun, runArchitectReview } from "./agent-engine";
 import { executeOrgDiscovery } from "./discovery-engine";
 import { executeHealthAssessment } from "./health-engine";
 import { generateChangeProposal, rollbackChange } from "./change-engine";
@@ -937,6 +937,43 @@ Follow Salesforce Metadata API v60.0 format.`
     } catch (error: any) {
       res.status(422).json({ error: "Architectural review failed", details: error.message });
     }
+  });
+
+  // ====== VALIDATE (checkOnly deploy) ======
+  app.post("/api/requirements/:id/validate", (req, res) => {
+    const reqId = parseInt(req.params.id);
+    const { orgId } = req.body;
+
+    const requirement = storage.getRequirement(reqId);
+    if (!requirement) return res.status(404).json({ error: "Requirement not found" });
+
+    const run = storage.createAgentRun({
+      requirementId: reqId,
+      orgId: orgId || null,
+      status: "pending",
+      phase: "init",
+      stepsJson: "[]",
+      retryCount: 0,
+      maxRetries: 0,
+      startedAt: new Date().toISOString(),
+    });
+
+    // Register SSE emitters for this run
+    const emitters = new Set<(step: any) => void>();
+    sseClients.set(run.id, emitters);
+
+    executeValidationRun(run.id, reqId, orgId || null, (step) => {
+      const clients = sseClients.get(run.id);
+      if (clients) {
+        for (const emit of clients) {
+          try { emit(step); } catch {}
+        }
+      }
+    }).finally(() => {
+      setTimeout(() => sseClients.delete(run.id), 30000);
+    });
+
+    res.status(201).json(run);
   });
 
   // ====== AGENT RUNS (agentic pattern) ======

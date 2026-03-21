@@ -330,6 +330,20 @@ export async function executeOrgDiscovery(
       // skip
     }
 
+    // ========== PHASE 10b: Edition Detection ==========
+    onProgress({ phase: "edition", message: "Detecting org edition...", totalComponents: totalDiscovered, describedComponents: 0 });
+
+    try {
+      const orgInfo = await restQuery(org, "SELECT OrganizationType FROM Organization LIMIT 1");
+      if (orgInfo.length > 0 && orgInfo[0].OrganizationType) {
+        const edition = orgInfo[0].OrganizationType as string;
+        storage.updateOrg(orgId, { orgEdition: edition });
+        onProgress({ phase: "edition", message: `Detected edition: ${edition}`, totalComponents: totalDiscovered, describedComponents: 0 });
+      }
+    } catch (_e) {
+      // Organization object query may fail on some editions — skip
+    }
+
     // ========== PHASE 11: AI Descriptions (batch) ==========
     onProgress({ phase: "ai_descriptions", message: "Generating AI descriptions...", totalComponents: totalDiscovered, describedComponents: 0 });
 

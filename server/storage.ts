@@ -187,6 +187,7 @@ const migrations = [
   `ALTER TABLE sf_orgs ADD COLUMN client_secret TEXT`,
   `ALTER TABLE sf_orgs ADD COLUMN customer_id INTEGER`,
   `ALTER TABLE sf_orgs ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'read_only'`,
+  `ALTER TABLE sf_orgs ADD COLUMN org_edition TEXT`,
 ];
 for (const m of migrations) {
   try { sqlite.exec(m + ";"); } catch (_e) { /* column already exists */ }
