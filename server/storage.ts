@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { eq, desc, like, or, and } from "drizzle-orm";
 import {
   customers, sfOrgs, requirements, analyses, metadataComponents, deployments, agentRuns,
-  orgScans, orgInventory, healthAssessments, healthFindings,
+  orgScans, orgInventory, healthAssessments, healthFindings, changeRequests,
   type InsertCustomer, type Customer,
   type InsertSfOrg, type SfOrg,
   type InsertRequirement, type Requirement,
@@ -15,6 +15,7 @@ import {
   type InsertOrgInventoryItem, type OrgInventoryItem,
   type InsertHealthAssessment, type HealthAssessment,
   type InsertHealthFinding, type HealthFinding,
+  type InsertChangeRequest, type ChangeRequest,
 } from "@shared/schema";
 
 const sqlite = new Database("sf_deploy.db");
@@ -156,6 +157,27 @@ sqlite.exec(`
     recommendation TEXT NOT NULL,
     code_snippet TEXT
   );
+  CREATE TABLE IF NOT EXISTS change_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    target_component_id INTEGER,
+    target_api_name TEXT,
+    target_type TEXT,
+    original_code TEXT,
+    proposed_code TEXT,
+    diff_json TEXT,
+    impact_analysis_json TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    rollback_package_json TEXT,
+    deployed_to_sandbox INTEGER DEFAULT 0,
+    deployed_to_production INTEGER DEFAULT 0,
+    sandbox_org_id INTEGER,
+    production_org_id INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  );
 `);
 
 // Migrations: add columns if missing
@@ -243,6 +265,14 @@ export interface IStorage {
   getHealthFindingsByCategory(assessmentId: number, category: string): HealthFinding[];
   createHealthFinding(f: InsertHealthFinding): HealthFinding;
   deleteHealthFindings(assessmentId: number): void;
+
+  // Change Requests
+  getChangeRequests(orgId: number): ChangeRequest[];
+  getChangeRequest(id: number): ChangeRequest | undefined;
+  createChangeRequest(cr: InsertChangeRequest): ChangeRequest;
+  updateChangeRequest(id: number, data: Partial<InsertChangeRequest>): ChangeRequest | undefined;
+  deleteChangeRequest(id: number): void;
+  getAllChangeRequests(): ChangeRequest[];
 }
 
 export class SqliteStorage implements IStorage {
@@ -434,6 +464,26 @@ export class SqliteStorage implements IStorage {
   }
   deleteHealthFindings(assessmentId: number): void {
     db.delete(healthFindings).where(eq(healthFindings.assessmentId, assessmentId)).run();
+  }
+
+  // Change Requests
+  getChangeRequests(orgId: number): ChangeRequest[] {
+    return db.select().from(changeRequests).where(eq(changeRequests.orgId, orgId)).orderBy(desc(changeRequests.id)).all();
+  }
+  getChangeRequest(id: number): ChangeRequest | undefined {
+    return db.select().from(changeRequests).where(eq(changeRequests.id, id)).get();
+  }
+  createChangeRequest(cr: InsertChangeRequest): ChangeRequest {
+    return db.insert(changeRequests).values(cr).returning().get();
+  }
+  updateChangeRequest(id: number, data: Partial<InsertChangeRequest>): ChangeRequest | undefined {
+    return db.update(changeRequests).set(data).where(eq(changeRequests.id, id)).returning().get();
+  }
+  deleteChangeRequest(id: number): void {
+    db.delete(changeRequests).where(eq(changeRequests.id, id)).run();
+  }
+  getAllChangeRequests(): ChangeRequest[] {
+    return db.select().from(changeRequests).orderBy(desc(changeRequests.id)).all();
   }
 }
 

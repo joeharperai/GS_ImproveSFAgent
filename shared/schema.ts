@@ -203,6 +203,33 @@ export const insertHealthFindingSchema = createInsertSchema(healthFindings).omit
 export type InsertHealthFinding = z.infer<typeof insertHealthFindingSchema>;
 export type HealthFinding = typeof healthFindings.$inferSelect;
 
+// Change requests — tracks requests to modify existing org components
+export const changeRequests = sqliteTable("change_requests", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  orgId: integer("org_id").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  targetComponentId: integer("target_component_id"),
+  targetApiName: text("target_api_name"),
+  targetType: text("target_type"),
+  originalCode: text("original_code"),
+  proposedCode: text("proposed_code"),
+  diffJson: text("diff_json"),
+  impactAnalysisJson: text("impact_analysis_json"),
+  status: text("status").notNull().default("draft"),
+  rollbackPackageJson: text("rollback_package_json"),
+  deployedToSandbox: integer("deployed_to_sandbox").default(0),
+  deployedToProduction: integer("deployed_to_production").default(0),
+  sandboxOrgId: integer("sandbox_org_id"),
+  productionOrgId: integer("production_org_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
+});
+
+export const insertChangeRequestSchema = createInsertSchema(changeRequests).omit({ id: true });
+export type InsertChangeRequest = z.infer<typeof insertChangeRequestSchema>;
+export type ChangeRequest = typeof changeRequests.$inferSelect;
+
 // Agent step log entry type (not a table, stored as JSON in agentRuns.stepsJson)
 export interface AgentStep {
   id: string;

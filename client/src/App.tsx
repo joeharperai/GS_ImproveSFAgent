@@ -14,6 +14,7 @@ import AgentConsole from "./pages/AgentConsole";
 import Customers from "./pages/Customers";
 import OrgDiscovery from "./pages/OrgDiscovery";
 import HealthReport from "./pages/HealthReport";
+import ContextualUpdates from "./pages/ContextualUpdates";
 import NotFound from "./pages/not-found";
 
 function AppRoutes() {
@@ -30,6 +31,8 @@ function AppRoutes() {
               <Route path="/requirements/:id" component={RequirementDetail} />
               <Route path="/discovery" component={OrgDiscovery} />
               <Route path="/health" component={HealthReport} />
+              <Route path="/changes" component={ContextualUpdates} />
+              <Route path="/changes/:id" component={ContextualUpdates} />
               <Route path="/orgs" component={OrgConnections} />
               <Route path="/deployments" component={Deployments} />
               <Route path="/agent" component={AgentConsole} />

@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { executeAgentRun, runArchitectReview } from "./agent-engine";
 import { executeOrgDiscovery } from "./discovery-engine";
 import { executeHealthAssessment } from "./health-engine";
+import { generateChangeProposal, rollbackChange } from "./change-engine";
 import Anthropic from "@anthropic-ai/sdk";
 import type { AgentStep } from "@shared/schema";
 
@@ -515,6 +516,128 @@ export function registerRoutes(server: Server, app: Express) {
     res.json(findings);
   });
 
+  // ====== CHANGE REQUEST ROUTES ======
+
+  // List change requests for an org
+  app.get("/api/orgs/:id/changes", (req, res) => {
+    res.json(storage.getChangeRequests(parseInt(req.params.id)));
+  });
+
+  // List all change requests
+  app.get("/api/changes", (_req, res) => {
+    res.json(storage.getAllChangeRequests());
+  });
+
+  // Get single change request
+  app.get("/api/changes/:id", (req, res) => {
+    const cr = storage.getChangeRequest(parseInt(req.params.id));
+    if (!cr) return res.status(404).json({ error: "Change request not found" });
+    res.json(cr);
+  });
+
+  // Create change request
+  app.post("/api/changes", (req, res) => {
+    const cr = storage.createChangeRequest({
+      ...req.body,
+      status: "draft",
+      deployedToSandbox: 0,
+      deployedToProduction: 0,
+      createdAt: new Date().toISOString(),
+    });
+    res.status(201).json(cr);
+  });
+
+  // Generate AI proposal for a change request
+  app.post("/api/changes/:id/propose", async (req, res) => {
+    const id = parseInt(req.params.id);
+    try {
+      await generateChangeProposal(id);
+      const updated = storage.getChangeRequest(id);
+      res.json(updated);
+    } catch (error: any) {
+      res.status(422).json({ error: "Proposal generation failed", details: error.message });
+    }
+  });
+
+  // Approve a change request
+  app.post("/api/changes/:id/approve", (req, res) => {
+    const cr = storage.updateChangeRequest(parseInt(req.params.id), {
+      status: "approved",
+      updatedAt: new Date().toISOString(),
+    });
+    if (!cr) return res.status(404).json({ error: "Change request not found" });
+    res.json(cr);
+  });
+
+  // Reject a change request
+  app.post("/api/changes/:id/reject", (req, res) => {
+    const cr = storage.updateChangeRequest(parseInt(req.params.id), {
+      status: "rejected",
+      updatedAt: new Date().toISOString(),
+    });
+    if (!cr) return res.status(404).json({ error: "Change request not found" });
+    res.json(cr);
+  });
+
+  // Deploy to sandbox
+  app.post("/api/changes/:id/deploy-sandbox", (req, res) => {
+    const cr = storage.updateChangeRequest(parseInt(req.params.id), {
+      status: "deploying",
+      deployedToSandbox: 1,
+      updatedAt: new Date().toISOString(),
+    });
+    if (!cr) return res.status(404).json({ error: "Change request not found" });
+    // In real implementation, this would use Metadata API to deploy
+    setTimeout(() => {
+      storage.updateChangeRequest(cr.id, {
+        status: "deployed",
+        updatedAt: new Date().toISOString(),
+      });
+    }, 2000);
+    res.json(cr);
+  });
+
+  // Promote to production
+  app.post("/api/changes/:id/promote", (req, res) => {
+    const cr = storage.getChangeRequest(parseInt(req.params.id));
+    if (!cr) return res.status(404).json({ error: "Change request not found" });
+    if (!cr.deployedToSandbox) {
+      return res.status(400).json({ error: "Must deploy to sandbox first" });
+    }
+    const updated = storage.updateChangeRequest(cr.id, {
+      deployedToProduction: 1,
+      updatedAt: new Date().toISOString(),
+    });
+    res.json(updated);
+  });
+
+  // Rollback
+  app.post("/api/changes/:id/rollback", (req, res) => {
+    try {
+      rollbackChange(parseInt(req.params.id));
+      const cr = storage.getChangeRequest(parseInt(req.params.id));
+      res.json(cr);
+    } catch (error: any) {
+      res.status(422).json({ error: error.message });
+    }
+  });
+
+  // Update change request
+  app.patch("/api/changes/:id", (req, res) => {
+    const cr = storage.updateChangeRequest(parseInt(req.params.id), {
+      ...req.body,
+      updatedAt: new Date().toISOString(),
+    });
+    if (!cr) return res.status(404).json({ error: "Change request not found" });
+    res.json(cr);
+  });
+
+  // Delete change request
+  app.delete("/api/changes/:id", (req, res) => {
+    storage.deleteChangeRequest(parseInt(req.params.id));
+    res.json({ success: true });
+  });
+
   // ====== REQUIREMENT ROUTES ======
   app.get("/api/requirements", (_req, res) => {
     const reqs = storage.getRequirements();
@@ -947,6 +1070,7 @@ Follow Salesforce Metadata API v60.0 format.`
       successfulAgentRuns: runs.filter((r) => r.status === "success").length,
       totalInventoryItems: allInventory,
       totalAssessments: allAssessments,
+      totalChangeRequests: storage.getAllChangeRequests().length,
     });
   });
 }
