@@ -21,6 +21,7 @@ import {
   ChevronRight, Bot, Play,
 } from "lucide-react";
 import type { Requirement, Analysis, MetadataComponent, AgentRun } from "@shared/schema";
+import { ArchitectReviewPanel } from "@/components/ArchitectReview";
 
 export default function RequirementDetail() {
   const params = useParams<{ id: string }>();
@@ -174,6 +175,9 @@ export default function RequirementDetail() {
           </div>
         </div>
       </div>
+
+      {/* Architect Review Card — BEFORE code generation */}
+      <ArchitectReviewPanel requirementId={reqId} />
 
       {/* Agent Deploy Card */}
       <Card className="border-primary/20 bg-gradient-to-r from-primary/[0.03] to-transparent">

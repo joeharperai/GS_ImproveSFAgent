@@ -32,22 +32,280 @@ function emitAndLog(runId: number, emit: SSEEmitter, step: AgentStep) {
 }
 
 // ============================================================
-// PHASE 1: AI Analysis
+// SALESFORCE WELL-ARCHITECTED GOVERNANCE RULES
+// Embedded from https://architect.salesforce.com/well-architected
+// ============================================================
+const GOVERNANCE_SYSTEM_PROMPT = `You are a Senior Salesforce Technical Architect performing an architectural governance review.
+You MUST enforce ALL of the following rules strictly. Your role is to CHALLENGE the design, not rubber-stamp it.
+
+## SALESFORCE WELL-ARCHITECTED FRAMEWORK PILLARS
+
+### TRUSTED (Security & Compliance)
+- All Apex must enforce CRUD/FLS checks (WITH SECURITY_ENFORCED or Schema.sObjectType checks)
+- No hardcoded IDs, credentials, passwords, or org-specific references in code
+- Enforce sharing rules: use "with sharing" by default; document any "without sharing" usage
+- Sensitive data must use Platform Encryption or Shield where appropriate
+- Connected Apps must use named credentials, never store tokens in custom settings
+
+### EASY (Intentional, Maintainable, Readable)
+- One trigger per object (consolidate with trigger handler framework)
+- Consolidate automations per object — no duplicate Flow/Process Builder/Trigger on same object & event
+- Clear naming conventions: [Object]_[Purpose]_[Type] (e.g., Account_UpdateRating_Flow)
+- All Apex classes must have JSDoc/ApexDoc comments
+- No business logic directly in triggers — use handler classes
+- Use Custom Metadata Types or Custom Labels for configuration, not Custom Settings (deprecated pattern)
+
+### ADAPTABLE (Resilient, ALM-Ready)
+- All components must be deployable via Metadata API (no manual config steps)
+- Include @isTest classes with meaningful assertions (>75% coverage, aim for >90%)
+- Use bulk-safe test data factories, not seeAllData=true
+- Consider impact on existing automation before adding new automation
+
+## GOVERNOR LIMITS — HARD RULES
+- Max 100 SOQL queries per synchronous transaction (200 async)
+- Max 150 DML statements per transaction
+- Max 10,000 DML records per transaction
+- Max 6MB heap size sync / 12MB async
+- Max 10 seconds CPU time sync / 60 seconds async
+- NEVER put SOQL or DML inside loops — this is the #1 violation to catch
+- Use collections (List, Set, Map) for bulk processing
+- Use selective queries with indexed fields (Id, Name, CreatedDate, RecordTypeId, standard lookup fields)
+- Before-save Flows for same-record field updates (10-20x faster than after-save)
+
+## BULKIFICATION REQUIREMENTS
+- All Apex triggers must handle up to 200 records per batch
+- All Flows must handle bulk invocations
+- Use Trigger.new / Trigger.old collections, never assume single record
+- Avoid row-level SOQL; query outside loop and use Map for lookups
+- For large data volumes, use Batch Apex or Queueable instead of synchronous processing
+
+## FSC (Financial Services Cloud) CONVENTIONS
+- Use Person Accounts for individual clients (not standard Contacts where FSC is enabled)
+- Use FinServ__FinancialAccount__c and related standard FSC objects (not custom duplicates)
+- FinServ namespace objects require FSC licensing — flag if used outside FSC orgs
+- Limited Financial Account records per account — design for pagination and lazy loading
+- FSC requires Professional, Enterprise, or Unlimited Edition
+- Experience Cloud integration needs Partner Community or Customer Community Plus licenses
+- Check for managed package object conflicts before creating custom objects with similar names
+
+## RECENT SALESFORCE RELEASE CONSIDERATIONS
+- Flow is the preferred automation tool (not Process Builder or Workflow Rules — both are being retired)
+- Use before-save record-triggered Flows for same-record updates where possible
+- Screen Flows should use reactive components and custom LWC within Flows
+- Use Salesforce CLI (sf) for deployment, not the legacy Metadata API when possible
+- API version should be 60.0+ (current)
+
+## ANTI-PATTERNS TO FLAG
+1. SOQL/DML inside loops
+2. Hardcoded record IDs or org-specific URLs
+3. Multiple triggers on the same object
+4. Using Process Builder for new automation (use Flow instead)
+5. seeAllData=true in test classes
+6. Missing CRUD/FLS enforcement
+7. Custom objects that duplicate standard FSC objects
+8. Storing config in Custom Settings instead of Custom Metadata Types
+9. Mixed DML operations (setup + non-setup objects in same transaction)
+10. Missing error handling in Apex (empty catch blocks)
+11. Recursive trigger execution without recursion guards
+12. Non-selective SOQL queries on large tables
+13. Using Metadata API operations that require manual org configuration
+14. Hardcoded API versions below 60.0`;
+
+// ============================================================
+// ARCHITECTURAL REVIEW TYPES
+// ============================================================
+export interface ArchitectViolation {
+  rule: string;
+  severity: "blocker" | "critical" | "warning" | "info";
+  component?: string;
+  description: string;
+  recommendation: string;
+  frameworkPillar: "Trusted" | "Easy" | "Adaptable" | "Governor Limits" | "FSC" | "Best Practice";
+}
+
+export interface ArchitectReviewResult {
+  overallVerdict: "pass" | "pass_with_warnings" | "fail";
+  violations: ArchitectViolation[];
+  designChallenges: string[];
+  fscImplications: string[];
+  governorLimitRisks: string[];
+  recommendations: string[];
+  approvedToGenerate: boolean;
+}
+
+// ============================================================
+// PHASE 0: ARCHITECTURAL REVIEW (Pre-Build Governance Gate)
+// ============================================================
+export async function runArchitectReview(
+  requirement: Requirement,
+  runId?: number,
+  emit?: SSEEmitter
+): Promise<ArchitectReviewResult> {
+  if (runId && emit) {
+    emitAndLog(runId, emit, makeStep("architect_review", "start", "Architectural governance review in progress — challenging design decisions...", "thinking"));
+    storage.updateAgentRun(runId, { phase: "architect_review" });
+  }
+
+  const message = await client.messages.create({
+    model: "claude_sonnet_4_6",
+    max_tokens: 6144,
+    system: GOVERNANCE_SYSTEM_PROMPT,
+    messages: [{
+      role: "user",
+      content: `Perform a thorough architectural governance review of the following Salesforce requirement BEFORE any code or metadata is generated.
+
+Act as a critical Technical Architect — your job is to find problems, challenge assumptions, and prevent bad designs from progressing.
+
+REQUIREMENT:
+Title: ${requirement.title}
+Description: ${requirement.description}
+Category: ${requirement.category}
+Priority: ${requirement.priority}
+
+Analyze this requirement against ALL governance rules and respond with JSON only (no markdown, no code fences):
+{
+  "overallVerdict": "pass | pass_with_warnings | fail",
+  "violations": [
+    {
+      "rule": "Name of the violated rule",
+      "severity": "blocker | critical | warning | info",
+      "component": "Which proposed component is affected (if applicable)",
+      "description": "What is wrong",
+      "recommendation": "How to fix it",
+      "frameworkPillar": "Trusted | Easy | Adaptable | Governor Limits | FSC | Best Practice"
+    }
+  ],
+  "designChallenges": [
+    "Questions or challenges for the developer about their design decisions — things that should be reconsidered"
+  ],
+  "fscImplications": [
+    "Any FSC-specific licensing, data model, or packaging implications. If not FSC-related, return empty array."
+  ],
+  "governorLimitRisks": [
+    "Specific governor limit risks identified in this design"
+  ],
+  "recommendations": [
+    "Positive architectural recommendations to improve the design"
+  ],
+  "approvedToGenerate": true/false
+}
+
+CRITICAL RULES FOR YOUR REVIEW:
+- If any "blocker" violations exist, set approvedToGenerate=false and overallVerdict="fail"
+- If only warnings/info exist, set approvedToGenerate=true and overallVerdict="pass_with_warnings"
+- If clean, set overallVerdict="pass"
+- ALWAYS include at least 1-2 design challenges even for clean designs (the architect always questions)
+- Be specific — reference the actual requirement details in your findings
+- Consider what COULD go wrong at scale (1000+ records, concurrent users, large data volumes)`
+    }]
+  });
+
+  const content = message.content[0];
+  if (content.type !== "text") throw new Error("Unexpected response type");
+
+  let parsed: ArchitectReviewResult;
+  try {
+    parsed = JSON.parse(content.text);
+  } catch {
+    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+    else throw new Error("Could not parse architectural review response");
+  }
+
+  // Emit violations as individual steps
+  if (runId && emit) {
+    const blockers = parsed.violations.filter(v => v.severity === "blocker");
+    const criticals = parsed.violations.filter(v => v.severity === "critical");
+    const warnings = parsed.violations.filter(v => v.severity === "warning");
+
+    if (blockers.length > 0) {
+      for (const v of blockers) {
+        emitAndLog(runId, emit, makeStep("architect_review", "blocker",
+          `BLOCKER [${v.frameworkPillar}]: ${v.description} → ${v.recommendation}`, "error"));
+      }
+    }
+
+    if (criticals.length > 0) {
+      for (const v of criticals) {
+        emitAndLog(runId, emit, makeStep("architect_review", "critical",
+          `CRITICAL [${v.frameworkPillar}]: ${v.description} → ${v.recommendation}`, "error"));
+      }
+    }
+
+    if (warnings.length > 0) {
+      for (const v of warnings) {
+        emitAndLog(runId, emit, makeStep("architect_review", "warning",
+          `WARNING [${v.frameworkPillar}]: ${v.description} → ${v.recommendation}`, "warning"));
+      }
+    }
+
+    if (parsed.designChallenges.length > 0) {
+      for (const challenge of parsed.designChallenges) {
+        emitAndLog(runId, emit, makeStep("architect_review", "challenge",
+          `ARCHITECT CHALLENGE: ${challenge}`, "info"));
+      }
+    }
+
+    if (parsed.governorLimitRisks.length > 0) {
+      for (const risk of parsed.governorLimitRisks) {
+        emitAndLog(runId, emit, makeStep("architect_review", "governor_risk",
+          `GOVERNOR LIMIT RISK: ${risk}`, "warning"));
+      }
+    }
+
+    if (parsed.fscImplications.length > 0) {
+      for (const imp of parsed.fscImplications) {
+        emitAndLog(runId, emit, makeStep("architect_review", "fsc",
+          `FSC IMPLICATION: ${imp}`, "info"));
+      }
+    }
+
+    // Final verdict
+    const verdictStatus = parsed.overallVerdict === "fail" ? "error"
+      : parsed.overallVerdict === "pass_with_warnings" ? "warning" : "success";
+    const verdictText = parsed.overallVerdict === "fail"
+      ? `REVIEW FAILED: ${blockers.length} blockers, ${criticals.length} critical issues found. Design must be revised before code generation.`
+      : parsed.overallVerdict === "pass_with_warnings"
+        ? `REVIEW PASSED WITH WARNINGS: ${warnings.length} warnings to address. Proceeding with caution.`
+        : "REVIEW PASSED: Design is compliant with Salesforce Well-Architected Framework.";
+
+    emitAndLog(runId, emit, makeStep("architect_review", "verdict", verdictText, verdictStatus as AgentStep["status"]));
+  }
+
+  return parsed;
+}
+
+// ============================================================
+// PHASE 1: AI Analysis (Enhanced with Governance)
 // ============================================================
 async function runAnalysis(
   runId: number,
   requirement: Requirement,
+  architectReview: ArchitectReviewResult,
   emit: SSEEmitter
 ): Promise<any> {
-  emitAndLog(runId, emit, makeStep("analyzing", "start", "Analyzing requirement with AI architect...", "thinking"));
+  emitAndLog(runId, emit, makeStep("analyzing", "start", "Analyzing requirement with AI architect (governance-aware)...", "thinking"));
   storage.updateAgentRun(runId, { phase: "analyzing" });
+
+  const warningContext = architectReview.violations.length > 0
+    ? `\n\nARCHITECTURAL REVIEW FINDINGS TO ADDRESS:\n${architectReview.violations.map(v =>
+      `- [${v.severity.toUpperCase()}] ${v.description}: ${v.recommendation}`
+    ).join("\n")}\n\nYou MUST address all violations in your analysis. Do not propose components that violate these rules.`
+    : "";
+
+  const fscContext = architectReview.fscImplications.length > 0
+    ? `\n\nFSC IMPLICATIONS TO CONSIDER:\n${architectReview.fscImplications.map(i => `- ${i}`).join("\n")}`
+    : "";
 
   const message = await client.messages.create({
     model: "claude_sonnet_4_6",
     max_tokens: 4096,
+    system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
       role: "user",
       content: `You are an expert Salesforce architect. Analyze this requirement and produce a deployment plan.
+You must COMPLY with ALL Salesforce Well-Architected Framework rules and governance constraints provided in your system instructions.
+${warningContext}${fscContext}
 
 REQUIREMENT:
 Title: ${requirement.title}
@@ -68,11 +326,23 @@ Respond with valid JSON only (no markdown, no code fences):
     }
   ],
   "dependencies": ["Dependency descriptions"],
-  "bestPractices": ["Best practice notes"],
+  "bestPractices": ["Best practice notes — must reference Well-Architected Framework"],
   "risks": [{ "risk": "Description", "mitigation": "How to fix", "severity": "low|medium|high" }],
   "estimatedEffort": "Time estimate",
-  "deployOrder": ["Ordered list of apiNames for correct deployment sequence"]
-}`
+  "deployOrder": ["Ordered list of apiNames for correct deployment sequence"],
+  "governanceNotes": ["How this design addresses each architectural review finding"]
+}
+
+HARD RULES:
+- One trigger per object maximum — use handler classes
+- Use before-save Flows for same-record field updates
+- All Apex must be bulkified — no SOQL/DML in loops
+- No hardcoded IDs or org-specific values
+- Include @isTest classes for all Apex with meaningful assertions
+- Use Custom Metadata Types for configuration values
+- Enforce CRUD/FLS in all Apex (WITH SECURITY_ENFORCED)
+- API version 60.0 for all components
+- Flow is preferred over Process Builder / Workflow Rules`
     }]
   });
 
@@ -112,7 +382,7 @@ Respond with valid JSON only (no markdown, no code fences):
 }
 
 // ============================================================
-// PHASE 2: Metadata Generation
+// PHASE 2: Metadata Generation (Enhanced with Governance)
 // ============================================================
 async function runGeneration(
   runId: number,
@@ -120,7 +390,7 @@ async function runGeneration(
   analysisResult: any,
   emit: SSEEmitter
 ): Promise<any[]> {
-  emitAndLog(runId, emit, makeStep("generating", "start", "Generating Salesforce metadata and code...", "thinking"));
+  emitAndLog(runId, emit, makeStep("generating", "start", "Generating governance-compliant Salesforce metadata and code...", "thinking"));
   storage.updateAgentRun(runId, { phase: "generating" });
   storage.updateRequirement(requirement.id, { status: "generating" });
 
@@ -129,9 +399,11 @@ async function runGeneration(
   const message = await client.messages.create({
     model: "claude_sonnet_4_6",
     max_tokens: 8192,
+    system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
       role: "user",
       content: `You are an expert Salesforce developer. Generate complete, deployable Salesforce metadata.
+You MUST comply with ALL Salesforce Well-Architected Framework rules in your system instructions.
 
 REQUIREMENT: ${requirement.title}
 DESCRIPTION: ${requirement.description}
@@ -151,14 +423,37 @@ For each component, generate the complete Salesforce Metadata API XML or Apex/LW
   ]
 }
 
-Rules:
+MANDATORY GOVERNANCE RULES FOR CODE GENERATION:
 - Custom Objects: include deploymentStatus=Deployed, enableActivities, enableReports, sharingModel
 - Custom Fields: include label, type, required, description
-- Apex Classes: API version 60.0, bulkified code, include @isTest class with assertions
-- Apex Triggers: bulkified, use handler pattern
-- Flows: complete Flow metadata XML
+- Apex Classes: 
+  * API version 60.0
+  * Bulkified code — NO SOQL or DML inside loops
+  * Use "with sharing" keyword
+  * Enforce CRUD/FLS with WITH SECURITY_ENFORCED on all SOQL queries
+  * Use collections (List, Map, Set) for bulk processing
+  * Include JSDoc-style comments
+  * No hardcoded IDs or org-specific values
+  * Include proper error handling (no empty catch blocks)
+- Apex Triggers:
+  * One trigger per object (consolidate if existing trigger exists)
+  * Use handler class pattern — no business logic in trigger body
+  * Handle up to 200 records per batch
+  * Include recursion guard (static Boolean or Trigger context variable)
+- Test Classes:
+  * Separate @isTest class with @testSetup method
+  * Create test data via factory — NEVER use seeAllData=true
+  * Test bulk operations (insert 200 records)
+  * Test positive, negative, and boundary scenarios
+  * Aim for >90% code coverage with meaningful assertions
+- Flows: 
+  * Use before-save record-triggered Flows for same-record field updates
+  * Complete Flow metadata XML
+  * Use Decision elements for branching logic
 - Validation Rules: include errorMessage, errorDisplayField
-- LWC: provide JS module + HTML template as combined string`
+- LWC: provide JS module + HTML template as combined string, wire adapters where appropriate
+- Permission Sets: principle of least privilege
+- All metadata must be deployable via Metadata API with NO manual steps`
     }]
   });
 
@@ -195,15 +490,71 @@ Rules:
     ));
   }
 
+  // Post-generation governance validation
+  emitAndLog(runId, emit, makeStep("generating", "post_validation", "Running post-generation governance validation...", "thinking"));
+
+  const postValidation = await runPostGenerationValidation(createdComponents);
+  if (postValidation.issues.length > 0) {
+    for (const issue of postValidation.issues) {
+      emitAndLog(runId, emit, makeStep("generating", "governance_flag",
+        `POST-GEN CHECK: ${issue}`, "warning"));
+    }
+  }
+
   storage.updateRequirement(requirement.id, { status: "ready" });
 
   emitAndLog(runId, emit, makeStep(
     "generating", "complete",
-    `Generated ${createdComponents.length} deployable components`,
+    `Generated ${createdComponents.length} governance-compliant components`,
     "success"
   ));
 
   return createdComponents;
+}
+
+// Post-generation static analysis for common violations
+async function runPostGenerationValidation(components: any[]): Promise<{ issues: string[] }> {
+  const issues: string[] = [];
+
+  for (const comp of components) {
+    const code = (comp.metadataXml || comp.metadata || "").toLowerCase();
+    const name = comp.apiName || comp.label || "";
+
+    // Check for SOQL/DML in loops
+    if (comp.componentType === "ApexClass" || comp.componentType === "ApexTrigger") {
+      if (/for\s*\(.*\)[\s\S]*?\[select\s/i.test(code) || /while\s*\(.*\)[\s\S]*?\[select\s/i.test(code)) {
+        issues.push(`${name}: Potential SOQL query inside loop detected`);
+      }
+      if (/for\s*\(.*\)[\s\S]*?(insert|update|delete|upsert)\s/i.test(code)) {
+        issues.push(`${name}: Potential DML statement inside loop detected`);
+      }
+      // Check for hardcoded IDs (15 or 18 char Salesforce IDs)
+      if (/['"][a-zA-Z0-9]{15,18}['"]/.test(comp.metadataXml || comp.metadata || "")) {
+        const idMatch = (comp.metadataXml || comp.metadata || "").match(/['"]([a-zA-Z0-9]{15,18})['"]/);
+        if (idMatch && /^[a-zA-Z0-9]{15}$|^[a-zA-Z0-9]{18}$/.test(idMatch[1])) {
+          // Rough check for SF ID pattern (starts with 001, 003, 005, etc.)
+          const prefix = idMatch[1].substring(0, 3);
+          if (/^[0-9]{3}$/.test(prefix)) {
+            issues.push(`${name}: Potential hardcoded Salesforce ID detected (${idMatch[1].substring(0, 8)}...)`);
+          }
+        }
+      }
+      // Check for missing "with sharing"
+      if (/class\s+\w+/.test(code) && !code.includes("with sharing") && !code.includes("@istest")) {
+        issues.push(`${name}: Missing "with sharing" keyword — potential security risk`);
+      }
+      // Check for seeAllData
+      if (/seealldata\s*=\s*true/i.test(code)) {
+        issues.push(`${name}: Uses seeAllData=true — violates test isolation best practice`);
+      }
+      // Check for empty catch blocks
+      if (/catch\s*\([^)]*\)\s*\{\s*\}/.test(code)) {
+        issues.push(`${name}: Empty catch block detected — add proper error handling`);
+      }
+    }
+  }
+
+  return { issues };
 }
 
 // ============================================================
@@ -240,7 +591,6 @@ async function runDeployment(
     emitAndLog(runId, emit, makeStep("deploying", "deploy_component", stepDetail, "info"));
 
     if (org.status === "connected" && org.accessToken) {
-      // Attempt real deployment via Salesforce REST API
       try {
         const result = await deploySingleComponent(org, comp);
         if (result.success) {
@@ -369,7 +719,6 @@ async function runTests(
     return { passed: true, failures: [] };
   }
 
-  // Enqueue test run via Tooling API
   try {
     const testClassNames = apexClasses
       .map(c => c.apiName.replace("__c", ""))
@@ -432,7 +781,7 @@ async function runTests(
 }
 
 // ============================================================
-// PHASE 5: Error Fix & Retry Loop
+// PHASE 5: Error Fix & Retry Loop (Enhanced with Governance)
 // ============================================================
 async function runFixAndRetry(
   runId: number,
@@ -443,7 +792,7 @@ async function runFixAndRetry(
   emit: SSEEmitter
 ): Promise<boolean> {
   storage.updateAgentRun(runId, { phase: "fixing" });
-  emitAndLog(runId, emit, makeStep("fixing", "start", `Analyzing ${errors.length} errors and generating fixes...`, "thinking"));
+  emitAndLog(runId, emit, makeStep("fixing", "start", `Analyzing ${errors.length} errors and generating governance-compliant fixes...`, "thinking"));
 
   const run = storage.getAgentRun(runId);
   if (!run) return false;
@@ -455,13 +804,14 @@ async function runFixAndRetry(
 
   storage.updateAgentRun(runId, { retryCount: run.retryCount + 1 });
 
-  // Ask AI to fix the errors
   const message = await client.messages.create({
     model: "claude_sonnet_4_6",
     max_tokens: 8192,
+    system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
       role: "user",
-      content: `You are an expert Salesforce developer debugging deployment failures. Fix the following errors.
+      content: `You are an expert Salesforce developer debugging deployment failures.
+Fix the following errors while maintaining compliance with ALL governance rules in your system instructions.
 
 ORIGINAL REQUIREMENT: ${requirement.title}
 ${requirement.description}
@@ -482,7 +832,14 @@ Analyze each error, fix the metadata, and respond with JSON only:
     }
   ],
   "explanation": "Summary of what was fixed"
-}`
+}
+
+IMPORTANT: The fixed code must still comply with ALL governance rules:
+- Bulkified code, no SOQL/DML in loops
+- WITH SECURITY_ENFORCED on queries
+- "with sharing" keyword
+- No hardcoded IDs
+- Proper error handling`
     }]
   });
 
@@ -502,11 +859,10 @@ Analyze each error, fix the metadata, and respond with JSON only:
 
   emitAndLog(runId, emit, makeStep(
     "fixing", "diagnosed",
-    `Diagnosis: ${parsed.explanation || "Applied fixes to failed components"}`,
+    `Diagnosis: ${parsed.explanation || "Applied governance-compliant fixes to failed components"}`,
     "info"
   ));
 
-  // Apply fixes
   for (const fix of fixes) {
     const comp = failedComponents.find(c => c.apiName === fix.apiName);
     if (comp) {
@@ -523,7 +879,7 @@ Analyze each error, fix the metadata, and respond with JSON only:
 }
 
 // ============================================================
-// MAIN AGENT ORCHESTRATOR
+// MAIN AGENT ORCHESTRATOR (Enhanced with Architectural Review)
 // ============================================================
 export async function executeAgentRun(
   runId: number,
@@ -546,7 +902,6 @@ export async function executeAgentRun(
       return;
     }
   } else {
-    // Use first available org or create a demo one
     const orgs = storage.getOrgs();
     org = orgs.find(o => o.status === "connected") || orgs[0];
     if (!org) {
@@ -565,10 +920,30 @@ export async function executeAgentRun(
   emitAndLog(runId, emit, makeStep("init", "start", `Agent started for: "${requirement.title}" → ${org.name}`, "info"));
 
   try {
-    // PHASE 1: Analyze
-    const analysisResult = await runAnalysis(runId, requirement, emit);
+    // PHASE 0: Architectural Governance Review (NEW — runs before anything else)
+    const architectReview = await runArchitectReview(requirement, runId, emit);
 
-    // PHASE 2: Generate metadata
+    if (!architectReview.approvedToGenerate) {
+      // HALT — design has blockers
+      storage.updateAgentRun(runId, {
+        status: "failed",
+        phase: "complete",
+        errorSummary: `Architectural review failed: ${architectReview.violations.filter(v => v.severity === "blocker").length} blocker(s) found. Revise the requirement before proceeding.`,
+        completedAt: new Date().toISOString(),
+      });
+      storage.updateRequirement(requirementId, { status: "failed" });
+      emitAndLog(runId, emit, makeStep(
+        "complete", "blocked",
+        "Agent HALTED: Architectural review found blocking violations. Revise the requirement and rerun.",
+        "error"
+      ));
+      return;
+    }
+
+    // PHASE 1: Analyze (governance-aware)
+    const analysisResult = await runAnalysis(runId, requirement, architectReview, emit);
+
+    // PHASE 2: Generate metadata (governance-compliant)
     let components = await runGeneration(runId, requirement, analysisResult, emit);
 
     // PHASE 3+4+5: Deploy → Test → Fix retry loop
@@ -586,11 +961,9 @@ export async function executeAgentRun(
       const deployResult = await runDeployment(runId, requirement, org, components, emit);
 
       if (deployResult.success) {
-        // Run tests
         const testResult = await runTests(runId, org, components, emit);
 
         if (testResult.passed) {
-          // All good — mark complete
           storage.updateAgentRun(runId, {
             status: "success",
             phase: "complete",
@@ -599,12 +972,11 @@ export async function executeAgentRun(
           storage.updateRequirement(requirementId, { status: "deployed" });
           emitAndLog(runId, emit, makeStep(
             "complete", "done",
-            `Agent completed successfully. ${components.length} components deployed and verified.`,
+            `Agent completed successfully. ${components.length} governance-compliant components deployed and verified.`,
             "success"
           ));
           return;
         } else {
-          // Tests failed — try to fix
           if (attempt < maxAttempts) {
             const fixApplied = await runFixAndRetry(
               runId, requirement, org,
@@ -616,7 +988,6 @@ export async function executeAgentRun(
           }
         }
       } else {
-        // Deployment errors — try to fix
         if (attempt < maxAttempts) {
           const failedComps = storage.getComponentsByRequirement(requirementId)
             .filter(c => c.status === "failed");

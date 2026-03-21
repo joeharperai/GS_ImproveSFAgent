@@ -10,7 +10,7 @@ import { Link } from "wouter";
 import {
   Bot, Terminal, CheckCircle, XCircle, AlertTriangle, Loader2,
   Brain, Code, Rocket, TestTube, Wrench, ArrowRight, Clock,
-  Activity, Zap,
+  Activity, Zap, ShieldAlert,
 } from "lucide-react";
 import type { AgentRun, AgentStep } from "@shared/schema";
 
@@ -146,8 +146,8 @@ function LiveAgentStream({ run }: { run: AgentRun }) {
 
         {/* Phase Progress Bar */}
         <div className="flex items-center gap-1 mt-3">
-          {["init", "analyzing", "generating", "deploying", "testing", "complete"].map((p, i) => {
-            const phases = ["init", "analyzing", "generating", "deploying", "testing", "fixing", "complete"];
+          {["init", "architect_review", "analyzing", "generating", "deploying", "testing", "complete"].map((p) => {
+            const phases = ["init", "architect_review", "analyzing", "generating", "deploying", "testing", "fixing", "complete"];
             const currentIdx = phases.indexOf(currentPhase);
             const thisIdx = phases.indexOf(p);
             const isActive = thisIdx <= currentIdx;
@@ -156,7 +156,9 @@ function LiveAgentStream({ run }: { run: AgentRun }) {
               <div key={p} className="flex items-center gap-1 flex-1">
                 <div
                   className={`h-1.5 w-full rounded-full transition-all duration-500 ${
-                    isCurrent ? "bg-primary animate-pulse" : isActive ? "bg-primary" : "bg-muted"
+                    isCurrent
+                      ? p === "architect_review" ? "bg-amber-500 animate-pulse" : "bg-primary animate-pulse"
+                      : isActive ? "bg-primary" : "bg-muted"
                   }`}
                 />
               </div>
@@ -165,6 +167,7 @@ function LiveAgentStream({ run }: { run: AgentRun }) {
         </div>
         <div className="flex justify-between text-[10px] text-muted-foreground mt-1 px-0.5">
           <span>Init</span>
+          <span>Review</span>
           <span>Analyze</span>
           <span>Generate</span>
           <span>Deploy</span>
@@ -211,6 +214,7 @@ function StepLine({ step }: { step: AgentStep }) {
   };
   const phaseIconMap: Record<string, typeof Bot> = {
     init: Terminal,
+    architect_review: ShieldAlert,
     analyzing: Brain,
     generating: Code,
     deploying: Rocket,
@@ -243,6 +247,7 @@ function StepLine({ step }: { step: AgentStep }) {
 function PhaseIndicator({ phase }: { phase: string }) {
   const config: Record<string, { label: string; color: string; icon: typeof Bot }> = {
     init: { label: "Initializing", color: "bg-slate-500/10 text-slate-500 border-slate-500/20", icon: Terminal },
+    architect_review: { label: "Architect Review", color: "bg-amber-500/10 text-amber-500 border-amber-500/20", icon: ShieldAlert },
     analyzing: { label: "Analyzing", color: "bg-blue-500/10 text-blue-500 border-blue-500/20", icon: Brain },
     generating: { label: "Generating", color: "bg-purple-500/10 text-purple-500 border-purple-500/20", icon: Code },
     deploying: { label: "Deploying", color: "bg-orange-500/10 text-orange-500 border-orange-500/20", icon: Rocket },

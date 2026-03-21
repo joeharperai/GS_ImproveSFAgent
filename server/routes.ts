@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
-import { executeAgentRun } from "./agent-engine";
+import { executeAgentRun, runArchitectReview } from "./agent-engine";
 import Anthropic from "@anthropic-ai/sdk";
 import type { AgentStep } from "@shared/schema";
 
@@ -139,7 +139,19 @@ export function registerRoutes(server: Server, app: Express) {
         max_tokens: 4096,
         messages: [{
           role: "user",
-          content: `You are an expert Salesforce architect and developer. Analyze this requirement and provide a detailed implementation plan.
+          content: `You are an expert Salesforce Technical Architect. Analyze this requirement and provide a detailed implementation plan.
+You must follow the Salesforce Well-Architected Framework (Trusted, Easy, Adaptable pillars).
+
+CRITICAL RULES:
+- Bulkify all Apex/Flows — NO SOQL or DML inside loops
+- No hardcoded IDs or org-specific values
+- Follow FSC data model conventions where applicable
+- Flag any governor limit risks (100 SOQL/sync, 150 DML, 10k DML records, 6MB heap)
+- Use Flows over Process Builder/Workflow Rules (being retired)
+- One trigger per object with handler pattern
+- "with sharing" by default, CRUD/FLS enforcement
+- Before-save Flows for same-record field updates
+- API version 60.0
 
 REQUIREMENT:
 Title: ${requirement.title}
@@ -152,7 +164,7 @@ Respond with valid JSON only (no markdown, no code fences). Use this exact struc
   "summary": "A 2-3 sentence summary of what needs to be built",
   "components": [
     {
-      "type": "CustomObject | CustomField | Flow | ApexClass | ApexTrigger | LWC | ValidationRule | PermissionSet | Layout | Report | Dashboard | EmailTemplate | ProcessBuilder | RecordType",
+      "type": "CustomObject | CustomField | Flow | ApexClass | ApexTrigger | LWC | ValidationRule | PermissionSet | Layout | Report | Dashboard | EmailTemplate | RecordType",
       "apiName": "The_API_Name__c",
       "label": "Human-readable label",
       "description": "What this component does",
@@ -160,7 +172,7 @@ Respond with valid JSON only (no markdown, no code fences). Use this exact struc
     }
   ],
   "dependencies": ["Description of each dependency between components"],
-  "bestPractices": ["Specific Salesforce best practices that apply"],
+  "bestPractices": ["Specific Salesforce Well-Architected Framework best practices that apply"],
   "risks": [{ "risk": "Description of the risk", "mitigation": "How to mitigate it", "severity": "low | medium | high" }],
   "estimatedEffort": "e.g., 4-6 hours, 2-3 days, etc."
 }`
@@ -362,6 +374,20 @@ Follow Salesforce Metadata API v60.0 format.`
   app.get("/api/requirements/:id/deployments", (req, res) => {
     const deps = storage.getDeploymentsByRequirement(parseInt(req.params.id));
     res.json(deps);
+  });
+
+  // ====== ARCHITECTURAL REVIEW (standalone) ======
+  app.post("/api/requirements/:id/architect-review", async (req, res) => {
+    const reqId = parseInt(req.params.id);
+    const requirement = storage.getRequirement(reqId);
+    if (!requirement) return res.status(404).json({ error: "Requirement not found" });
+
+    try {
+      const review = await runArchitectReview(requirement);
+      res.json(review);
+    } catch (error: any) {
+      res.status(422).json({ error: "Architectural review failed", details: error.message });
+    }
   });
 
   // ====== AGENT RUNS (agentic pattern) ======

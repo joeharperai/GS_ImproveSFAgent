@@ -90,7 +90,7 @@ export const agentRuns = sqliteTable("agent_runs", {
   requirementId: integer("requirement_id").notNull(),
   orgId: integer("org_id"),
   status: text("status").notNull().default("pending"), // pending | running | success | failed | cancelled
-  phase: text("phase").notNull().default("init"), // init | analyzing | generating | deploying | testing | fixing | complete
+  phase: text("phase").notNull().default("init"), // init | architect_review | analyzing | generating | deploying | testing | fixing | complete
   stepsJson: text("steps_json").notNull().default("[]"), // JSON array of step logs
   retryCount: integer("retry_count").notNull().default(0),
   maxRetries: integer("max_retries").notNull().default(3),
