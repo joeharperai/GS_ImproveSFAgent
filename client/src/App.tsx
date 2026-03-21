@@ -11,6 +11,7 @@ import RequirementDetail from "./pages/RequirementDetail";
 import OrgConnections from "./pages/OrgConnections";
 import Deployments from "./pages/Deployments";
 import AgentConsole from "./pages/AgentConsole";
+import Customers from "./pages/Customers";
 import NotFound from "./pages/not-found";
 
 function AppRoutes() {
@@ -22,6 +23,7 @@ function AppRoutes() {
           <main className="flex-1 overflow-y-auto">
             <Switch>
               <Route path="/" component={Dashboard} />
+              <Route path="/customers" component={Customers} />
               <Route path="/requirements" component={Requirements} />
               <Route path="/requirements/:id" component={RequirementDetail} />
               <Route path="/orgs" component={OrgConnections} />

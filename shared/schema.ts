@@ -2,6 +2,21 @@ import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
+// Customers — groups related Salesforce orgs together
+export const customers = sqliteTable("customers", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  industry: text("industry"),
+  contactName: text("contact_name"),
+  contactEmail: text("contact_email"),
+  notes: text("notes"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertCustomerSchema = createInsertSchema(customers).omit({ id: true });
+export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
+export type Customer = typeof customers.$inferSelect;
+
 // Salesforce org connections
 export const sfOrgs = sqliteTable("sf_orgs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -11,6 +26,8 @@ export const sfOrgs = sqliteTable("sf_orgs", {
   refreshToken: text("refresh_token"),
   clientId: text("client_id"),
   clientSecret: text("client_secret"),
+  customerId: integer("customer_id"),
+  accessMode: text("access_mode").notNull().default("read_only"), // read_only | read_write
   orgType: text("org_type").notNull().default("sandbox"), // sandbox | production | developer
   status: text("status").notNull().default("disconnected"), // connected | disconnected | error
   connectedAt: text("connected_at"),

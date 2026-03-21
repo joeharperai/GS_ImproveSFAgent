@@ -2,7 +2,8 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
 import { eq, desc } from "drizzle-orm";
 import {
-  sfOrgs, requirements, analyses, metadataComponents, deployments, agentRuns,
+  customers, sfOrgs, requirements, analyses, metadataComponents, deployments, agentRuns,
+  type InsertCustomer, type Customer,
   type InsertSfOrg, type SfOrg,
   type InsertRequirement, type Requirement,
   type InsertAnalysis, type Analysis,
@@ -17,6 +18,15 @@ export const db = drizzle(sqlite);
 
 // Run migrations
 sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    industry TEXT,
+    contact_name TEXT,
+    contact_email TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS sf_orgs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -86,17 +96,28 @@ sqlite.exec(`
   );
 `);
 
-// Migration: add client_id, client_secret columns to sf_orgs if missing
-try {
-  sqlite.exec(`ALTER TABLE sf_orgs ADD COLUMN client_id TEXT;`);
-} catch (_e) { /* column already exists */ }
-try {
-  sqlite.exec(`ALTER TABLE sf_orgs ADD COLUMN client_secret TEXT;`);
-} catch (_e) { /* column already exists */ }
+// Migrations: add columns if missing
+const migrations = [
+  `ALTER TABLE sf_orgs ADD COLUMN client_id TEXT`,
+  `ALTER TABLE sf_orgs ADD COLUMN client_secret TEXT`,
+  `ALTER TABLE sf_orgs ADD COLUMN customer_id INTEGER`,
+  `ALTER TABLE sf_orgs ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'read_only'`,
+];
+for (const m of migrations) {
+  try { sqlite.exec(m + ";"); } catch (_e) { /* column already exists */ }
+}
 
 export interface IStorage {
+  // Customers
+  getCustomers(): Customer[];
+  getCustomer(id: number): Customer | undefined;
+  createCustomer(customer: InsertCustomer): Customer;
+  updateCustomer(id: number, data: Partial<InsertCustomer>): Customer | undefined;
+  deleteCustomer(id: number): void;
+
   // Orgs
   getOrgs(): SfOrg[];
+  getOrgsByCustomer(customerId: number): SfOrg[];
   getOrg(id: number): SfOrg | undefined;
   createOrg(org: InsertSfOrg): SfOrg;
   updateOrg(id: number, data: Partial<InsertSfOrg>): SfOrg | undefined;
@@ -134,8 +155,31 @@ export interface IStorage {
 }
 
 export class SqliteStorage implements IStorage {
+  // Customers
+  getCustomers(): Customer[] {
+    return db.select().from(customers).all();
+  }
+  getCustomer(id: number): Customer | undefined {
+    return db.select().from(customers).where(eq(customers.id, id)).get();
+  }
+  createCustomer(customer: InsertCustomer): Customer {
+    return db.insert(customers).values(customer).returning().get();
+  }
+  updateCustomer(id: number, data: Partial<InsertCustomer>): Customer | undefined {
+    return db.update(customers).set(data).where(eq(customers.id, id)).returning().get();
+  }
+  deleteCustomer(id: number): void {
+    // Unlink any orgs from this customer
+    db.update(sfOrgs).set({ customerId: null }).where(eq(sfOrgs.customerId, id)).run();
+    db.delete(customers).where(eq(customers.id, id)).run();
+  }
+
+  // Orgs
   getOrgs(): SfOrg[] {
     return db.select().from(sfOrgs).all();
+  }
+  getOrgsByCustomer(customerId: number): SfOrg[] {
+    return db.select().from(sfOrgs).where(eq(sfOrgs.customerId, customerId)).all();
   }
   getOrg(id: number): SfOrg | undefined {
     return db.select().from(sfOrgs).where(eq(sfOrgs.id, id)).get();

@@ -11,11 +11,12 @@ import {
   SidebarMenuItem,
   SidebarFooter,
 } from "@/components/ui/sidebar";
-import { LayoutDashboard, FileText, Cloud, Rocket, Bot, Terminal } from "lucide-react";
+import { LayoutDashboard, FileText, Cloud, Rocket, Bot, Terminal, Users } from "lucide-react";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 
 const navItems = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
+  { label: "Customers", href: "/customers", icon: Users },
   { label: "Requirements", href: "/requirements", icon: FileText },
   { label: "Agent Console", href: "/agent", icon: Terminal },
   { label: "Org Connections", href: "/orgs", icon: Cloud },

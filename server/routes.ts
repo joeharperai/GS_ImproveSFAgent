@@ -11,6 +11,42 @@ const client = new Anthropic();
 const sseClients = new Map<number, Set<(step: AgentStep) => void>>();
 
 export function registerRoutes(server: Server, app: Express) {
+  // ====== CUSTOMER ROUTES ======
+  app.get("/api/customers", (_req, res) => {
+    const custs = storage.getCustomers();
+    res.json(custs);
+  });
+
+  app.get("/api/customers/:id", (req, res) => {
+    const cust = storage.getCustomer(parseInt(req.params.id));
+    if (!cust) return res.status(404).json({ error: "Customer not found" });
+    res.json(cust);
+  });
+
+  app.post("/api/customers", (req, res) => {
+    const cust = storage.createCustomer({
+      ...req.body,
+      createdAt: new Date().toISOString(),
+    });
+    res.status(201).json(cust);
+  });
+
+  app.patch("/api/customers/:id", (req, res) => {
+    const cust = storage.updateCustomer(parseInt(req.params.id), req.body);
+    if (!cust) return res.status(404).json({ error: "Customer not found" });
+    res.json(cust);
+  });
+
+  app.delete("/api/customers/:id", (req, res) => {
+    storage.deleteCustomer(parseInt(req.params.id));
+    res.json({ success: true });
+  });
+
+  app.get("/api/customers/:id/orgs", (req, res) => {
+    const orgs = storage.getOrgsByCustomer(parseInt(req.params.id));
+    res.json(orgs);
+  });
+
   // ====== ORG ROUTES ======
   app.get("/api/orgs", (_req, res) => {
     const orgs = storage.getOrgs();
@@ -623,6 +659,7 @@ Follow Salesforce Metadata API v60.0 format.`
         failed: reqs.filter((r) => r.status === "failed").length,
       },
       connectedOrgs: orgs.filter((o) => o.status === "connected").length,
+      totalCustomers: storage.getCustomers().length,
       totalOrgs: orgs.length,
       totalDeployments: deps.length,
       successfulDeployments: deps.filter((d) => d.status === "success").length,

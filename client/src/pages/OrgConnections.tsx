@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,24 +20,32 @@ import {
   DialogTrigger,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useToast } from "@/hooks/use-toast";
 import {
   Plus, Cloud, CloudOff, CheckCircle, Trash2, Link as LinkIcon,
   Shield, ExternalLink, Info, RefreshCw, Zap, Copy, AlertTriangle,
+  Pencil,
 } from "lucide-react";
-import type { SfOrg } from "@shared/schema";
+import type { SfOrg, Customer } from "@shared/schema";
 
 export default function OrgConnections() {
   const [open, setOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const [selectedOrg, setSelectedOrg] = useState<SfOrg | null>(null);
+  const [customerFilter, setCustomerFilter] = useState<string>("all");
   const { toast } = useToast();
 
   const { data: orgs = [], isLoading } = useQuery<SfOrg[]>({
     queryKey: ["/api/orgs"],
     queryFn: () => apiRequest("GET", "/api/orgs").then((r) => r.json()),
-    refetchInterval: 5000, // Poll for status changes after OAuth flow
+    refetchInterval: 5000,
+  });
+
+  const { data: customers = [] } = useQuery<Customer[]>({
+    queryKey: ["/api/customers"],
+    queryFn: () => apiRequest("GET", "/api/customers").then((r) => r.json()),
   });
 
   const createMutation = useMutation({
@@ -46,6 +54,7 @@ export default function OrgConnections() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orgs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
       setOpen(false);
       toast({ title: "Org added", description: "Now connect it with OAuth" });
     },
@@ -57,6 +66,7 @@ export default function OrgConnections() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orgs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
     },
   });
 
@@ -103,8 +113,74 @@ export default function OrgConnections() {
     },
   });
 
-  // Detect the callback URL for the user
+  const accessModeMutation = useMutation({
+    mutationFn: ({ id, accessMode }: { id: number; accessMode: string }) =>
+      apiRequest("PATCH", `/api/orgs/${id}`, { accessMode }).then((r) => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orgs"] });
+      toast({ title: "Access mode updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to update access mode", description: err.message, variant: "destructive" });
+    },
+  });
+
   const callbackUrl = `${window.location.origin}/api/oauth/callback`;
+
+  // Build a customer lookup map
+  const customerMap = useMemo(() => {
+    const map = new Map<number, Customer>();
+    for (const c of customers) {
+      map.set(c.id, c);
+    }
+    return map;
+  }, [customers]);
+
+  // Filter and group orgs by customer
+  const filteredOrgs = useMemo(() => {
+    if (customerFilter === "all") return orgs;
+    if (customerFilter === "unassigned") return orgs.filter((o) => !o.customerId);
+    const cid = parseInt(customerFilter);
+    return orgs.filter((o) => o.customerId === cid);
+  }, [orgs, customerFilter]);
+
+  const groupedOrgs = useMemo(() => {
+    const groups: { label: string; customerId: number | null; orgs: SfOrg[] }[] = [];
+    const byCustomer = new Map<number | null, SfOrg[]>();
+
+    for (const org of filteredOrgs) {
+      const key = org.customerId ?? null;
+      if (!byCustomer.has(key)) byCustomer.set(key, []);
+      byCustomer.get(key)!.push(org);
+    }
+
+    // Named customers first, sorted by name
+    const customerIds = Array.from(byCustomer.keys()).filter((k) => k !== null) as number[];
+    customerIds.sort((a, b) => {
+      const nameA = customerMap.get(a)?.name || "";
+      const nameB = customerMap.get(b)?.name || "";
+      return nameA.localeCompare(nameB);
+    });
+
+    for (const cid of customerIds) {
+      groups.push({
+        label: customerMap.get(cid)?.name || `Customer #${cid}`,
+        customerId: cid,
+        orgs: byCustomer.get(cid) || [],
+      });
+    }
+
+    // Unassigned at the end
+    if (byCustomer.has(null)) {
+      groups.push({
+        label: "Unassigned",
+        customerId: null,
+        orgs: byCustomer.get(null) || [],
+      });
+    }
+
+    return groups;
+  }, [filteredOrgs, customerMap]);
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -133,11 +209,31 @@ export default function OrgConnections() {
               </DialogDescription>
             </DialogHeader>
             <AddOrgForm
+              customers={customers}
               onSubmit={(data) => createMutation.mutate(data)}
               isPending={createMutation.isPending}
             />
           </DialogContent>
         </Dialog>
+      </div>
+
+      {/* Customer Filter */}
+      <div className="flex items-center gap-3">
+        <Label className="text-sm text-muted-foreground shrink-0">Filter by customer:</Label>
+        <Select value={customerFilter} onValueChange={setCustomerFilter}>
+          <SelectTrigger className="w-[200px]" data-testid="select-customer-filter">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Customers</SelectItem>
+            <SelectItem value="unassigned">Unassigned</SelectItem>
+            {customers.map((c) => (
+              <SelectItem key={c.id} value={String(c.id)}>
+                {c.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Callback URL Card */}
@@ -163,7 +259,6 @@ export default function OrgConnections() {
                     navigator.clipboard.writeText(callbackUrl).then(() => {
                       toast({ title: "Copied", description: "Callback URL copied to clipboard" });
                     }).catch(() => {
-                      // Fallback for environments where clipboard API is blocked
                       toast({ title: "Callback URL", description: callbackUrl });
                     });
                   }}
@@ -224,7 +319,7 @@ export default function OrgConnections() {
         </CardContent>
       </Card>
 
-      {/* Orgs List */}
+      {/* Orgs List — grouped by customer */}
       {isLoading ? (
         <div className="space-y-3">
           {[1, 2].map((i) => (
@@ -235,7 +330,7 @@ export default function OrgConnections() {
             </Card>
           ))}
         </div>
-      ) : orgs.length === 0 ? (
+      ) : filteredOrgs.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
             <Cloud className="h-10 w-10 text-muted-foreground/40 mb-3" />
@@ -246,100 +341,29 @@ export default function OrgConnections() {
           </CardContent>
         </Card>
       ) : (
-        <div className="space-y-3">
-          {orgs.map((org) => (
-            <Card key={org.id} data-testid={`card-org-${org.id}`}>
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`h-10 w-10 rounded-lg flex items-center justify-center ${
-                        org.status === "connected"
-                          ? "bg-green-100 dark:bg-green-950"
-                          : org.status === "error"
-                          ? "bg-red-100 dark:bg-red-950"
-                          : "bg-slate-100 dark:bg-slate-800"
-                      }`}
-                    >
-                      {org.status === "connected" ? (
-                        <CheckCircle className="h-5 w-5 text-green-500" />
-                      ) : org.status === "error" ? (
-                        <AlertTriangle className="h-5 w-5 text-red-500" />
-                      ) : (
-                        <CloudOff className="h-5 w-5 text-muted-foreground" />
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium">{org.name}</p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-xs text-muted-foreground font-mono">
-                          {org.instanceUrl}
-                        </span>
-                        <OrgTypeBadge type={org.orgType} />
-                        <StatusBadge status={org.status} />
-                      </div>
-                      {org.connectedAt && (
-                        <p className="text-[11px] text-muted-foreground mt-0.5">
-                          Connected {new Date(org.connectedAt).toLocaleDateString()}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {org.status === "connected" && (
-                      <>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 text-xs"
-                          onClick={() => testMutation.mutate(org.id)}
-                          disabled={testMutation.isPending}
-                          data-testid={`button-test-${org.id}`}
-                        >
-                          <Zap className="h-3 w-3 mr-1" />
-                          {testMutation.isPending ? "Testing..." : "Test"}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 text-xs"
-                          onClick={() => refreshMutation.mutate(org.id)}
-                          disabled={refreshMutation.isPending}
-                          data-testid={`button-refresh-${org.id}`}
-                        >
-                          <RefreshCw className={`h-3 w-3 mr-1 ${refreshMutation.isPending ? "animate-spin" : ""}`} />
-                          Refresh
-                        </Button>
-                      </>
-                    )}
-                    {org.status !== "connected" && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-8 text-xs"
-                        onClick={() => {
-                          setSelectedOrg(org);
-                          setConnectOpen(true);
-                        }}
-                        data-testid={`button-connect-${org.id}`}
-                      >
-                        <LinkIcon className="h-3 w-3 mr-1" />
-                        Connect
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                      onClick={() => deleteMutation.mutate(org.id)}
-                      data-testid={`button-delete-org-${org.id}`}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+        <div className="space-y-6">
+          {groupedOrgs.map((group) => (
+            <div key={group.customerId ?? "unassigned"} className="space-y-3">
+              <h2 className="text-sm font-medium text-muted-foreground">{group.label}</h2>
+              {group.orgs.map((org) => (
+                <OrgCard
+                  key={org.id}
+                  org={org}
+                  onConnect={() => {
+                    setSelectedOrg(org);
+                    setConnectOpen(true);
+                  }}
+                  onTest={() => testMutation.mutate(org.id)}
+                  onRefresh={() => refreshMutation.mutate(org.id)}
+                  onDelete={() => deleteMutation.mutate(org.id)}
+                  onToggleAccessMode={(mode) =>
+                    accessModeMutation.mutate({ id: org.id, accessMode: mode })
+                  }
+                  testPending={testMutation.isPending}
+                  refreshPending={refreshMutation.isPending}
+                />
+              ))}
+            </div>
           ))}
         </div>
       )}
@@ -371,21 +395,164 @@ export default function OrgConnections() {
   );
 }
 
+function OrgCard({
+  org,
+  onConnect,
+  onTest,
+  onRefresh,
+  onDelete,
+  onToggleAccessMode,
+  testPending,
+  refreshPending,
+}: {
+  org: SfOrg;
+  onConnect: () => void;
+  onTest: () => void;
+  onRefresh: () => void;
+  onDelete: () => void;
+  onToggleAccessMode: (mode: string) => void;
+  testPending: boolean;
+  refreshPending: boolean;
+}) {
+  const isReadWrite = org.accessMode === "read_write";
+
+  return (
+    <Card data-testid={`card-org-${org.id}`}>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div
+              className={`h-10 w-10 rounded-lg flex items-center justify-center ${
+                org.status === "connected"
+                  ? "bg-green-100 dark:bg-green-950"
+                  : org.status === "error"
+                  ? "bg-red-100 dark:bg-red-950"
+                  : "bg-slate-100 dark:bg-slate-800"
+              }`}
+            >
+              {org.status === "connected" ? (
+                <CheckCircle className="h-5 w-5 text-green-500" />
+              ) : org.status === "error" ? (
+                <AlertTriangle className="h-5 w-5 text-red-500" />
+              ) : (
+                <CloudOff className="h-5 w-5 text-muted-foreground" />
+              )}
+            </div>
+            <div>
+              <p className="text-sm font-medium">{org.name}</p>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="text-xs text-muted-foreground font-mono">
+                  {org.instanceUrl}
+                </span>
+                <OrgTypeBadge type={org.orgType} />
+                <StatusBadge status={org.status} />
+              </div>
+              {org.connectedAt && (
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Connected {new Date(org.connectedAt).toLocaleDateString()}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Access Mode Toggle */}
+            <div className="flex items-center gap-1.5 mr-2" data-testid={`access-mode-${org.id}`}>
+              {isReadWrite ? (
+                <Pencil className="h-3 w-3 text-amber-500" />
+              ) : (
+                <Shield className="h-3 w-3 text-blue-500" />
+              )}
+              <span className={`text-[10px] font-medium ${isReadWrite ? "text-amber-600 dark:text-amber-400" : "text-blue-600 dark:text-blue-400"}`}>
+                {isReadWrite ? "R/W" : "RO"}
+              </span>
+              <Switch
+                checked={isReadWrite}
+                onCheckedChange={(checked) =>
+                  onToggleAccessMode(checked ? "read_write" : "read_only")
+                }
+                className="scale-75"
+                data-testid={`switch-access-mode-${org.id}`}
+              />
+            </div>
+
+            {org.status === "connected" && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={onTest}
+                  disabled={testPending}
+                  data-testid={`button-test-${org.id}`}
+                >
+                  <Zap className="h-3 w-3 mr-1" />
+                  {testPending ? "Testing..." : "Test"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={onRefresh}
+                  disabled={refreshPending}
+                  data-testid={`button-refresh-${org.id}`}
+                >
+                  <RefreshCw className={`h-3 w-3 mr-1 ${refreshPending ? "animate-spin" : ""}`} />
+                  Refresh
+                </Button>
+              </>
+            )}
+            {org.status !== "connected" && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={onConnect}
+                data-testid={`button-connect-${org.id}`}
+              >
+                <LinkIcon className="h-3 w-3 mr-1" />
+                Connect
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground hover:text-destructive"
+              onClick={onDelete}
+              data-testid={`button-delete-org-${org.id}`}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function AddOrgForm({
+  customers,
   onSubmit,
   isPending,
 }: {
+  customers: Customer[];
   onSubmit: (data: any) => void;
   isPending: boolean;
 }) {
   const [name, setName] = useState("");
   const [instanceUrl, setInstanceUrl] = useState("https://");
   const [orgType, setOrgType] = useState("sandbox");
+  const [customerId, setCustomerId] = useState<string>("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !instanceUrl) return;
-    onSubmit({ name, instanceUrl, orgType, status: "disconnected" });
+    onSubmit({
+      name,
+      instanceUrl,
+      orgType,
+      status: "disconnected",
+      customerId: customerId ? parseInt(customerId) : null,
+    });
   };
 
   return (
@@ -422,6 +589,22 @@ function AddOrgForm({
             <SelectItem value="sandbox">Sandbox</SelectItem>
             <SelectItem value="developer">Developer Edition</SelectItem>
             <SelectItem value="production">Production</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div>
+        <Label>Customer (optional)</Label>
+        <Select value={customerId} onValueChange={setCustomerId}>
+          <SelectTrigger data-testid="select-org-customer">
+            <SelectValue placeholder="Select customer (optional)" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">No customer</SelectItem>
+            {customers.map((c) => (
+              <SelectItem key={c.id} value={String(c.id)}>
+                {c.name}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>

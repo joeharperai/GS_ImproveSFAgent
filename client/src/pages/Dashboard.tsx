@@ -6,7 +6,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Link } from "wouter";
 import {
   FileText, Cloud, Rocket, CheckCircle, Clock, AlertTriangle,
-  ArrowRight, Zap, TrendingUp, Bot, Activity,
+  ArrowRight, Zap, TrendingUp, Bot, Activity, Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AgentRun } from "@shared/schema";
@@ -82,7 +82,7 @@ export default function Dashboard() {
       )}
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
@@ -148,6 +148,28 @@ export default function Dashboard() {
             </div>
           </CardContent>
         </Card>
+
+        <Link href="/customers">
+          <Card className="cursor-pointer hover:border-primary/30 transition-colors">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-muted-foreground">Customers</p>
+                  {isLoading ? (
+                    <Skeleton className="h-8 w-16 mt-1" />
+                  ) : (
+                    <p className="text-2xl font-bold" data-testid="text-total-customers">
+                      {stats?.totalCustomers || 0}
+                    </p>
+                  )}
+                </div>
+                <div className="h-10 w-10 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                  <Users className="h-5 w-5 text-orange-500" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
 
         <Card>
           <CardContent className="pt-6">
