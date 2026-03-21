@@ -14,6 +14,11 @@ const client = new Anthropic();
 const sseClients = new Map<number, Set<(step: AgentStep) => void>>();
 
 export function registerRoutes(server: Server, app: Express) {
+  // ====== HEALTH CHECK (for Railway / cloud platforms) ======
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", app: "GS_ImproveSFAgent", version: "1.0.0", timestamp: new Date().toISOString() });
+  });
+
   // ====== CUSTOMER ROUTES ======
   app.get("/api/customers", (_req, res) => {
     const custs = storage.getCustomers();

@@ -18,7 +18,8 @@ import {
   type InsertChangeRequest, type ChangeRequest,
 } from "@shared/schema";
 
-const sqlite = new Database("sf_deploy.db");
+const DB_PATH = process.env.DATABASE_PATH || "sf_deploy.db";
+const sqlite = new Database(DB_PATH);
 sqlite.pragma("journal_mode = WAL");
 export const db = drizzle(sqlite);
 
