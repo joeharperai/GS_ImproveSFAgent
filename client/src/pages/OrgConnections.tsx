@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,7 +24,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useToast } from "@/hooks/use-toast";
 import {
   Plus, Cloud, CloudOff, CheckCircle, Trash2, Link as LinkIcon,
-  Shield, ExternalLink, Info,
+  Shield, ExternalLink, Info, RefreshCw, Zap, Copy, AlertTriangle,
 } from "lucide-react";
 import type { SfOrg } from "@shared/schema";
 
@@ -37,6 +37,7 @@ export default function OrgConnections() {
   const { data: orgs = [], isLoading } = useQuery<SfOrg[]>({
     queryKey: ["/api/orgs"],
     queryFn: () => apiRequest("GET", "/api/orgs").then((r) => r.json()),
+    refetchInterval: 5000, // Poll for status changes after OAuth flow
   });
 
   const createMutation = useMutation({
@@ -67,12 +68,43 @@ export default function OrgConnections() {
         window.open(data.authUrl, "_blank", "noopener,noreferrer");
         toast({
           title: "OAuth initiated",
-          description: "Complete authentication in the new window",
+          description: "Complete authentication in the new window. This page will auto-refresh.",
         });
       }
       setConnectOpen(false);
     },
   });
+
+  const testMutation = useMutation({
+    mutationFn: (id: number) =>
+      apiRequest("POST", `/api/orgs/${id}/test`).then((r) => r.json()),
+    onSuccess: (data: any) => {
+      if (data.success) {
+        toast({ title: "Connection verified", description: data.message });
+      } else {
+        toast({ title: "Connection issue", description: data.message, variant: "destructive" });
+      }
+    },
+  });
+
+  const refreshMutation = useMutation({
+    mutationFn: (id: number) =>
+      apiRequest("POST", `/api/orgs/${id}/refresh-token`).then((r) => r.json()),
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orgs"] });
+      if (data.success) {
+        toast({ title: "Token refreshed", description: "Access token has been renewed" });
+      } else {
+        toast({ title: "Refresh failed", description: data.error, variant: "destructive" });
+      }
+    },
+    onError: () => {
+      toast({ title: "Refresh failed", description: "Could not refresh token — try reconnecting", variant: "destructive" });
+    },
+  });
+
+  // Detect the callback URL for the user
+  const callbackUrl = `${window.location.origin}/api/oauth/callback`;
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -108,6 +140,48 @@ export default function OrgConnections() {
         </Dialog>
       </div>
 
+      {/* Callback URL Card */}
+      <Card className="border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/50 dark:bg-emerald-950/20">
+        <CardContent className="pt-6">
+          <div className="flex items-start gap-3">
+            <Zap className="h-5 w-5 text-emerald-500 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-medium">OAuth Callback URL</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Use this URL as the Callback URL in your Salesforce Connected App configuration.
+              </p>
+              <div className="flex items-center gap-2 mt-2">
+                <code className="flex-1 text-xs bg-background border rounded-md px-3 py-2 font-mono break-all" data-testid="text-callback-url">
+                  {callbackUrl}
+                </code>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  data-testid="button-copy-callback"
+                  onClick={() => {
+                    navigator.clipboard.writeText(callbackUrl).then(() => {
+                      toast({ title: "Copied", description: "Callback URL copied to clipboard" });
+                    }).catch(() => {
+                      // Fallback for environments where clipboard API is blocked
+                      toast({ title: "Callback URL", description: callbackUrl });
+                    });
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              {callbackUrl.startsWith("http://") && (
+                <div className="flex items-center gap-1.5 mt-2 text-xs text-amber-600 dark:text-amber-400">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  <span>Salesforce requires HTTPS. Use ngrok or a reverse proxy to get an HTTPS URL.</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Setup Instructions */}
       <Card className="border-blue-200 dark:border-blue-900/50 bg-blue-50/50 dark:bg-blue-950/20">
         <CardContent className="pt-6">
@@ -115,13 +189,14 @@ export default function OrgConnections() {
             <Info className="h-5 w-5 text-blue-500 shrink-0 mt-0.5" />
             <div>
               <p className="text-sm font-medium">Salesforce Connected App Setup</p>
-              <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                To connect a Salesforce org, you need a Connected App with OAuth enabled.
-                In your Salesforce org, go to Setup → App Manager → New Connected App.
-                Enable OAuth Settings and add the "Full access (full)" scope. Set the callback
-                URL to your app's URL + /api/oauth/callback. Copy the Consumer Key and Consumer
-                Secret to use below.
-              </p>
+              <ol className="text-xs text-muted-foreground mt-2 leading-relaxed space-y-1.5 list-decimal list-inside">
+                <li>In your Salesforce org, go to <strong>Setup → App Manager → New Connected App</strong></li>
+                <li>Enable OAuth Settings</li>
+                <li>Set the <strong>Callback URL</strong> to the URL shown above</li>
+                <li>Add scopes: <strong>Full access (full)</strong> and <strong>Perform requests at any time (refresh_token)</strong></li>
+                <li>Save and wait 2-10 minutes for propagation</li>
+                <li>Copy the <strong>Consumer Key</strong> and <strong>Consumer Secret</strong> to use below</li>
+              </ol>
               <div className="flex gap-2 mt-3">
                 <Button variant="outline" size="sm" className="h-7 text-xs" asChild>
                   <a
@@ -181,11 +256,15 @@ export default function OrgConnections() {
                       className={`h-10 w-10 rounded-lg flex items-center justify-center ${
                         org.status === "connected"
                           ? "bg-green-100 dark:bg-green-950"
+                          : org.status === "error"
+                          ? "bg-red-100 dark:bg-red-950"
                           : "bg-slate-100 dark:bg-slate-800"
                       }`}
                     >
                       {org.status === "connected" ? (
                         <CheckCircle className="h-5 w-5 text-green-500" />
+                      ) : org.status === "error" ? (
+                        <AlertTriangle className="h-5 w-5 text-red-500" />
                       ) : (
                         <CloudOff className="h-5 w-5 text-muted-foreground" />
                       )}
@@ -197,6 +276,7 @@ export default function OrgConnections() {
                           {org.instanceUrl}
                         </span>
                         <OrgTypeBadge type={org.orgType} />
+                        <StatusBadge status={org.status} />
                       </div>
                       {org.connectedAt && (
                         <p className="text-[11px] text-muted-foreground mt-0.5">
@@ -206,6 +286,32 @@ export default function OrgConnections() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    {org.status === "connected" && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 text-xs"
+                          onClick={() => testMutation.mutate(org.id)}
+                          disabled={testMutation.isPending}
+                          data-testid={`button-test-${org.id}`}
+                        >
+                          <Zap className="h-3 w-3 mr-1" />
+                          {testMutation.isPending ? "Testing..." : "Test"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 text-xs"
+                          onClick={() => refreshMutation.mutate(org.id)}
+                          disabled={refreshMutation.isPending}
+                          data-testid={`button-refresh-${org.id}`}
+                        >
+                          <RefreshCw className={`h-3 w-3 mr-1 ${refreshMutation.isPending ? "animate-spin" : ""}`} />
+                          Refresh
+                        </Button>
+                      </>
+                    )}
                     {org.status !== "connected" && (
                       <Button
                         variant="outline"
@@ -375,7 +481,8 @@ function ConnectForm({
         />
       </div>
       <p className="text-xs text-muted-foreground">
-        Your credentials are used only for the OAuth flow and are not stored permanently.
+        Your credentials are stored locally and used for the OAuth flow and API calls.
+        They are never sent to any third-party service.
       </p>
       <Button
         type="submit"
@@ -402,6 +509,23 @@ function OrgTypeBadge({ type }: { type: string }) {
       }`}
     >
       {type}
+    </span>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    connected: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+    disconnected: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400",
+    error: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+  };
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium capitalize ${
+        colors[status] || colors.disconnected
+      }`}
+    >
+      {status}
     </span>
   );
 }

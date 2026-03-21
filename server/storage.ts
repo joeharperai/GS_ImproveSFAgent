@@ -23,6 +23,8 @@ sqlite.exec(`
     instance_url TEXT NOT NULL,
     access_token TEXT,
     refresh_token TEXT,
+    client_id TEXT,
+    client_secret TEXT,
     org_type TEXT NOT NULL DEFAULT 'sandbox',
     status TEXT NOT NULL DEFAULT 'disconnected',
     connected_at TEXT
@@ -83,6 +85,14 @@ sqlite.exec(`
     completed_at TEXT
   );
 `);
+
+// Migration: add client_id, client_secret columns to sf_orgs if missing
+try {
+  sqlite.exec(`ALTER TABLE sf_orgs ADD COLUMN client_id TEXT;`);
+} catch (_e) { /* column already exists */ }
+try {
+  sqlite.exec(`ALTER TABLE sf_orgs ADD COLUMN client_secret TEXT;`);
+} catch (_e) { /* column already exists */ }
 
 export interface IStorage {
   // Orgs

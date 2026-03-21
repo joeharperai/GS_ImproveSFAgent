@@ -40,14 +40,25 @@ export function registerRoutes(server: Server, app: Express) {
     const org = storage.getOrg(orgId);
     if (!org) return res.status(404).json({ error: "Org not found" });
 
-    const redirectUri = `${req.protocol}://${req.get("host")}/api/oauth/callback`;
+    // Build callback URL — honor X-Forwarded headers from ngrok/proxies
+    const proto = req.get("x-forwarded-proto") || req.protocol;
+    const host = req.get("x-forwarded-host") || req.get("host");
+    const redirectUri = `${proto}://${host}/api/oauth/callback`;
+
     const authUrl = `${instanceUrl}/services/oauth2/authorize?response_type=code&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${orgId}`;
 
-    storage.updateOrg(orgId, { instanceUrl, status: "disconnected" });
+    // Persist clientId + clientSecret so the callback can use them for token exchange
+    storage.updateOrg(orgId, {
+      instanceUrl,
+      clientId,
+      clientSecret,
+      status: "disconnected",
+    });
+
     res.json({ authUrl, redirectUri });
   });
 
-  // OAuth callback handler
+  // OAuth callback handler — exchanges auth code for access_token + refresh_token
   app.get("/api/oauth/callback", async (req, res) => {
     const { code, state } = req.query;
     if (!code || !state) {
@@ -58,18 +69,115 @@ export function registerRoutes(server: Server, app: Express) {
     const org = storage.getOrg(orgId);
     if (!org) return res.status(404).send("Org not found");
 
-    storage.updateOrg(orgId, {
-      status: "connected",
-      connectedAt: new Date().toISOString(),
-    });
+    if (!org.clientId || !org.clientSecret) {
+      return res.status(400).send("OAuth credentials not found — please initiate the connect flow again.");
+    }
 
-    res.send(`
-      <html><body>
-        <h2>Connected successfully!</h2>
-        <p>You can close this window and return to the app.</p>
-        <script>window.close();</script>
-      </body></html>
-    `);
+    // Build the same redirect URI that was used in the authorize request
+    const proto = req.get("x-forwarded-proto") || req.protocol;
+    const host = req.get("x-forwarded-host") || req.get("host");
+    const redirectUri = `${proto}://${host}/api/oauth/callback`;
+
+    try {
+      // Exchange authorization code for tokens
+      const tokenResponse = await fetch(`${org.instanceUrl}/services/oauth2/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: code as string,
+          client_id: org.clientId,
+          client_secret: org.clientSecret,
+          redirect_uri: redirectUri,
+        }),
+      });
+
+      if (!tokenResponse.ok) {
+        const errBody = await tokenResponse.text();
+        console.error("Salesforce token exchange failed:", errBody);
+        return res.send(`
+          <html><body style="font-family:system-ui;padding:2rem">
+            <h2 style="color:#dc2626">Connection Failed</h2>
+            <p>Salesforce returned an error during token exchange:</p>
+            <pre style="background:#f3f4f6;padding:1rem;border-radius:8px;overflow-x:auto">${errBody}</pre>
+            <p>Please close this window and try again.</p>
+          </body></html>
+        `);
+      }
+
+      const tokens = await tokenResponse.json() as {
+        access_token: string;
+        refresh_token?: string;
+        instance_url: string;
+        id: string;
+      };
+
+      // Persist tokens — the real instance_url from Salesforce may differ
+      storage.updateOrg(orgId, {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token || null,
+        instanceUrl: tokens.instance_url || org.instanceUrl,
+        status: "connected",
+        connectedAt: new Date().toISOString(),
+      });
+
+      res.send(`
+        <html><body style="font-family:system-ui;padding:2rem;text-align:center">
+          <h2 style="color:#16a34a">Connected Successfully</h2>
+          <p>Your Salesforce org is now connected. You can close this window and return to the app.</p>
+          <script>setTimeout(function(){ window.close(); }, 2000);</script>
+        </body></html>
+      `);
+    } catch (error: any) {
+      console.error("OAuth callback error:", error);
+      res.status(500).send(`
+        <html><body style="font-family:system-ui;padding:2rem">
+          <h2 style="color:#dc2626">Connection Error</h2>
+          <p>${error.message || "An unexpected error occurred."}</p>
+          <p>Please close this window and try again.</p>
+        </body></html>
+      `);
+    }
+  });
+
+  // Token refresh endpoint
+  app.post("/api/orgs/:id/refresh-token", async (req, res) => {
+    const org = storage.getOrg(parseInt(req.params.id));
+    if (!org) return res.status(404).json({ error: "Org not found" });
+
+    if (!org.refreshToken || !org.clientId || !org.clientSecret) {
+      return res.status(400).json({ error: "Missing refresh token or OAuth credentials — reconnect the org" });
+    }
+
+    try {
+      const tokenResponse = await fetch(`${org.instanceUrl}/services/oauth2/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: org.refreshToken,
+          client_id: org.clientId,
+          client_secret: org.clientSecret,
+        }),
+      });
+
+      if (!tokenResponse.ok) {
+        const errBody = await tokenResponse.text();
+        storage.updateOrg(org.id, { status: "error" });
+        return res.status(401).json({ error: "Token refresh failed", details: errBody });
+      }
+
+      const tokens = await tokenResponse.json() as { access_token: string; instance_url?: string };
+      storage.updateOrg(org.id, {
+        accessToken: tokens.access_token,
+        instanceUrl: tokens.instance_url || org.instanceUrl,
+        status: "connected",
+      });
+
+      res.json({ success: true, message: "Token refreshed successfully" });
+    } catch (error: any) {
+      res.status(500).json({ error: "Token refresh error", details: error.message });
+    }
   });
 
   app.post("/api/orgs/:id/test", async (req, res) => {

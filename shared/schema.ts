@@ -9,6 +9,8 @@ export const sfOrgs = sqliteTable("sf_orgs", {
   instanceUrl: text("instance_url").notNull(),
   accessToken: text("access_token"),
   refreshToken: text("refresh_token"),
+  clientId: text("client_id"),
+  clientSecret: text("client_secret"),
   orgType: text("org_type").notNull().default("sandbox"), // sandbox | production | developer
   status: text("status").notNull().default("disconnected"), // connected | disconnected | error
   connectedAt: text("connected_at"),
