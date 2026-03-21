@@ -37,8 +37,8 @@ export function AppSidebar() {
             <SFLogo />
           </div>
           <div>
-            <h1 className="text-sm font-semibold tracking-tight">SF Deploy Agent</h1>
-            <p className="text-[11px] text-muted-foreground">Autonomous Salesforce Builder</p>
+            <h1 className="text-sm font-semibold tracking-tight">GS_ImproveSFAgent</h1>
+            <p className="text-[11px] text-muted-foreground">Intelligent Salesforce Improvement Engine</p>
           </div>
         </div>
       </SidebarHeader>
@@ -85,7 +85,7 @@ function SFLogo() {
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
-      aria-label="SF Deploy Agent"
+      aria-label="GS_ImproveSFAgent"
     >
       <path d="M12 2L4 7v10l8 5 8-5V7l-8-5Z" />
       <path d="M12 22V12" />

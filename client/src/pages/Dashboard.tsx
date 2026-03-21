@@ -39,7 +39,7 @@ export default function Dashboard() {
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
             <p className="text-sm text-muted-foreground">
-              Autonomous Salesforce deployment overview
+              Intelligent Salesforce improvement overview
             </p>
           </div>
         </div>
