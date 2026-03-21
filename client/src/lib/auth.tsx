@@ -1,0 +1,113 @@
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import { setAuthToken } from "./queryClient";
+
+interface AuthUser {
+  id: number;
+  email: string;
+  displayName: string;
+  role: string;
+}
+
+interface AuthContextType {
+  user: AuthUser | null;
+  token: string | null;
+  isLoading: boolean;
+  setupRequired: boolean | null;
+  login: (email: string, password: string) => Promise<void>;
+  signup: (email: string, password: string, displayName: string) => Promise<void>;
+  logout: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | null>(null);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
+
+  // On mount, check if setup is required (no users yet)
+  useEffect(() => {
+    checkSetup();
+  }, []);
+
+  async function checkSetup() {
+    try {
+      const res = await fetch("/api/auth/setup-required");
+      if (res.ok) {
+        const data = await res.json();
+        setSetupRequired(data.setupRequired);
+      }
+    } catch {
+      // Server not reachable — will show auth page anyway
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  const login = useCallback(async (email: string, password: string) => {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "Login failed");
+    }
+
+    const data = await res.json();
+    setUser(data.user);
+    setToken(data.token);
+    setAuthToken(data.token);
+    setSetupRequired(false);
+  }, []);
+
+  const signup = useCallback(async (email: string, password: string, displayName: string) => {
+    const res = await fetch("/api/auth/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, displayName }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "Signup failed");
+    }
+
+    const data = await res.json();
+    setUser(data.user);
+    setToken(data.token);
+    setAuthToken(data.token);
+    setSetupRequired(false);
+  }, []);
+
+  const logout = useCallback(async () => {
+    if (token) {
+      try {
+        await fetch("/api/auth/logout", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch {
+        // Best-effort
+      }
+    }
+    setUser(null);
+    setToken(null);
+    setAuthToken(null);
+  }, [token]);
+
+  return (
+    <AuthContext.Provider value={{ user, token, isLoading, setupRequired, login, signup, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
+  return ctx;
+}

@@ -5,6 +5,7 @@ import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { AppSidebar } from "./components/AppSidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import { AuthProvider, useAuth } from "./lib/auth";
 import Dashboard from "./pages/Dashboard";
 import Requirements from "./pages/Requirements";
 import RequirementDetail from "./pages/RequirementDetail";
@@ -15,6 +16,7 @@ import Customers from "./pages/Customers";
 import OrgDiscovery from "./pages/OrgDiscovery";
 import HealthReport from "./pages/HealthReport";
 import ContextualUpdates from "./pages/ContextualUpdates";
+import Auth from "./pages/Auth";
 import NotFound from "./pages/not-found";
 
 function AppRoutes() {
@@ -45,11 +47,31 @@ function AppRoutes() {
   );
 }
 
+function AuthGate() {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Auth />;
+  }
+
+  return <AppRoutes />;
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AppRoutes />
-      <Toaster />
+      <AuthProvider>
+        <AuthGate />
+        <Toaster />
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

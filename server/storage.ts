@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { eq, desc, like, or, and } from "drizzle-orm";
 import {
   customers, sfOrgs, requirements, analyses, metadataComponents, deployments, agentRuns,
-  orgScans, orgInventory, healthAssessments, healthFindings, changeRequests,
+  orgScans, orgInventory, healthAssessments, healthFindings, changeRequests, users, sessions,
   type InsertCustomer, type Customer,
   type InsertSfOrg, type SfOrg,
   type InsertRequirement, type Requirement,
@@ -16,6 +16,8 @@ import {
   type InsertHealthAssessment, type HealthAssessment,
   type InsertHealthFinding, type HealthFinding,
   type InsertChangeRequest, type ChangeRequest,
+  type InsertUser, type User,
+  type InsertSession, type Session,
 } from "@shared/schema";
 
 const DB_PATH = process.env.DATABASE_PATH || "sf_deploy.db";
@@ -158,6 +160,22 @@ sqlite.exec(`
     recommendation TEXT NOT NULL,
     code_snippet TEXT
   );
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS change_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     org_id INTEGER NOT NULL,
@@ -267,6 +285,18 @@ export interface IStorage {
   getHealthFindingsByCategory(assessmentId: number, category: string): HealthFinding[];
   createHealthFinding(f: InsertHealthFinding): HealthFinding;
   deleteHealthFindings(assessmentId: number): void;
+
+  // Users
+  getUserByEmail(email: string): User | undefined;
+  getUser(id: number): User | undefined;
+  createUser(user: InsertUser): User;
+  getUserCount(): number;
+
+  // Sessions
+  getSessionByToken(token: string): Session | undefined;
+  createSession(session: InsertSession): Session;
+  deleteSession(token: string): void;
+  deleteExpiredSessions(): void;
 
   // Change Requests
   getChangeRequests(orgId: number): ChangeRequest[];
@@ -466,6 +496,36 @@ export class SqliteStorage implements IStorage {
   }
   deleteHealthFindings(assessmentId: number): void {
     db.delete(healthFindings).where(eq(healthFindings.assessmentId, assessmentId)).run();
+  }
+
+  // Users
+  getUserByEmail(email: string): User | undefined {
+    return db.select().from(users).where(eq(users.email, email)).get();
+  }
+  getUser(id: number): User | undefined {
+    return db.select().from(users).where(eq(users.id, id)).get();
+  }
+  createUser(user: InsertUser): User {
+    return db.insert(users).values(user).returning().get();
+  }
+  getUserCount(): number {
+    return db.select().from(users).all().length;
+  }
+
+  // Sessions
+  getSessionByToken(token: string): Session | undefined {
+    return db.select().from(sessions).where(eq(sessions.token, token)).get();
+  }
+  createSession(session: InsertSession): Session {
+    return db.insert(sessions).values(session).returning().get();
+  }
+  deleteSession(token: string): void {
+    db.delete(sessions).where(eq(sessions.token, token)).run();
+  }
+  deleteExpiredSessions(): void {
+    const now = new Date().toISOString();
+    // Delete all sessions where expiresAt < now
+    sqlite.exec(`DELETE FROM sessions WHERE expires_at < '${now}'`);
   }
 
   // Change Requests

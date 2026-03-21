@@ -5,6 +5,7 @@ import { executeAgentRun, executeValidationRun, runArchitectReview } from "./age
 import { executeOrgDiscovery } from "./discovery-engine";
 import { executeHealthAssessment } from "./health-engine";
 import { generateChangeProposal, rollbackChange } from "./change-engine";
+import { generateSalt, hashPassword, verifyPassword, createUserSession, requireAuth } from "./auth";
 import Anthropic from "@anthropic-ai/sdk";
 import type { AgentStep } from "@shared/schema";
 
@@ -18,6 +19,198 @@ export function registerRoutes(server: Server, app: Express) {
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", app: "GS_ImproveSFAgent", version: "1.0.0", timestamp: new Date().toISOString() });
   });
+
+  // ====== AUTH ROUTES (public — no auth required) ======
+
+  // Check if any users exist (first-time setup detection)
+  app.get("/api/auth/setup-required", (_req, res) => {
+    const count = storage.getUserCount();
+    res.json({ setupRequired: count === 0 });
+  });
+
+  // Sign up
+  app.post("/api/auth/signup", (req, res) => {
+    const { email, password, displayName } = req.body;
+    if (!email || !password || !displayName) {
+      return res.status(400).json({ error: "Email, password, and display name are required" });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters" });
+    }
+
+    const existing = storage.getUserByEmail(email);
+    if (existing) {
+      return res.status(409).json({ error: "A user with this email already exists" });
+    }
+
+    // First user becomes admin
+    const isFirstUser = storage.getUserCount() === 0;
+    const salt = generateSalt();
+    const passwordHash = hashPassword(password, salt);
+
+    const user = storage.createUser({
+      email,
+      passwordHash,
+      salt,
+      displayName,
+      role: isFirstUser ? "admin" : "user",
+      createdAt: new Date().toISOString(),
+    });
+
+    const session = createUserSession(user.id);
+
+    res.status(201).json({
+      user: { id: user.id, email: user.email, displayName: user.displayName, role: user.role },
+      token: session.token,
+      expiresAt: session.expiresAt,
+    });
+  });
+
+  // Log in
+  app.post("/api/auth/login", (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
+    const user = storage.getUserByEmail(email);
+    if (!user) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    if (!verifyPassword(password, user.salt, user.passwordHash)) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    const session = createUserSession(user.id);
+
+    res.json({
+      user: { id: user.id, email: user.email, displayName: user.displayName, role: user.role },
+      token: session.token,
+      expiresAt: session.expiresAt,
+    });
+  });
+
+  // Log out
+  app.post("/api/auth/logout", (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      storage.deleteSession(authHeader.slice(7));
+    }
+    res.json({ success: true });
+  });
+
+  // Get current user
+  app.get("/api/auth/me", (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+
+    const token = authHeader.slice(7);
+    const session = storage.getSessionByToken(token);
+    if (!session || new Date(session.expiresAt) < new Date()) {
+      if (session) storage.deleteSession(token);
+      return res.status(401).json({ error: "Session expired" });
+    }
+
+    const user = storage.getUser(session.userId);
+    if (!user) {
+      return res.status(401).json({ error: "User not found" });
+    }
+
+    res.json({
+      user: { id: user.id, email: user.email, displayName: user.displayName, role: user.role },
+    });
+  });
+
+  // ====== OAuth callback MUST stay public (no auth) ======
+  // (moved above requireAuth middleware)
+
+  // OAuth callback handler — exchanges auth code for access_token + refresh_token
+  app.get("/api/oauth/callback", async (req, res) => {
+    const { code, state } = req.query;
+    if (!code || !state) {
+      return res.status(400).send("Missing authorization code or state");
+    }
+
+    const orgId = parseInt(state as string);
+    const org = storage.getOrg(orgId);
+    if (!org) return res.status(404).send("Org not found");
+
+    if (!org.clientId || !org.clientSecret) {
+      return res.status(400).send("OAuth credentials not found — please initiate the connect flow again.");
+    }
+
+    // Build the same redirect URI that was used in the authorize request
+    const proto = req.get("x-forwarded-proto") || req.protocol;
+    const host = req.get("x-forwarded-host") || req.get("host");
+    const redirectUri = `${proto}://${host}/api/oauth/callback`;
+
+    try {
+      // Exchange authorization code for tokens
+      const tokenResponse = await fetch(`${org.instanceUrl}/services/oauth2/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: code as string,
+          client_id: org.clientId,
+          client_secret: org.clientSecret,
+          redirect_uri: redirectUri,
+        }),
+      });
+
+      if (!tokenResponse.ok) {
+        const errBody = await tokenResponse.text();
+        console.error("Salesforce token exchange failed:", errBody);
+        return res.send(`
+          <html><body style="font-family:system-ui;padding:2rem">
+            <h2 style="color:#dc2626">Connection Failed</h2>
+            <p>Salesforce returned an error during token exchange:</p>
+            <pre style="background:#f3f4f6;padding:1rem;border-radius:8px;overflow-x:auto">${errBody}</pre>
+            <p>Please close this window and try again.</p>
+          </body></html>
+        `);
+      }
+
+      const tokens = await tokenResponse.json() as {
+        access_token: string;
+        refresh_token?: string;
+        instance_url: string;
+        id: string;
+      };
+
+      // Persist tokens — the real instance_url from Salesforce may differ
+      storage.updateOrg(orgId, {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token || null,
+        instanceUrl: tokens.instance_url || org.instanceUrl,
+        status: "connected",
+        connectedAt: new Date().toISOString(),
+      });
+
+      res.send(`
+        <html><body style="font-family:system-ui;padding:2rem;text-align:center">
+          <h2 style="color:#16a34a">Connected Successfully</h2>
+          <p>Your Salesforce org is now connected. You can close this window and return to the app.</p>
+          <script>setTimeout(function(){ window.close(); }, 2000);</script>
+        </body></html>
+      `);
+    } catch (error: any) {
+      console.error("OAuth callback error:", error);
+      res.status(500).send(`
+        <html><body style="font-family:system-ui;padding:2rem">
+          <h2 style="color:#dc2626">Connection Error</h2>
+          <p>${error.message || "An unexpected error occurred."}</p>
+          <p>Please close this window and try again.</p>
+        </body></html>
+      `);
+    }
+  });
+
+  // ====== REQUIRE AUTH for all remaining /api routes ======
+  app.use("/api", requireAuth);
 
   // ====== CUSTOMER ROUTES ======
   app.get("/api/customers", (_req, res) => {
@@ -100,88 +293,6 @@ export function registerRoutes(server: Server, app: Express) {
     });
 
     res.json({ authUrl, redirectUri });
-  });
-
-  // OAuth callback handler — exchanges auth code for access_token + refresh_token
-  app.get("/api/oauth/callback", async (req, res) => {
-    const { code, state } = req.query;
-    if (!code || !state) {
-      return res.status(400).send("Missing authorization code or state");
-    }
-
-    const orgId = parseInt(state as string);
-    const org = storage.getOrg(orgId);
-    if (!org) return res.status(404).send("Org not found");
-
-    if (!org.clientId || !org.clientSecret) {
-      return res.status(400).send("OAuth credentials not found — please initiate the connect flow again.");
-    }
-
-    // Build the same redirect URI that was used in the authorize request
-    const proto = req.get("x-forwarded-proto") || req.protocol;
-    const host = req.get("x-forwarded-host") || req.get("host");
-    const redirectUri = `${proto}://${host}/api/oauth/callback`;
-
-    try {
-      // Exchange authorization code for tokens
-      const tokenResponse = await fetch(`${org.instanceUrl}/services/oauth2/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "authorization_code",
-          code: code as string,
-          client_id: org.clientId,
-          client_secret: org.clientSecret,
-          redirect_uri: redirectUri,
-        }),
-      });
-
-      if (!tokenResponse.ok) {
-        const errBody = await tokenResponse.text();
-        console.error("Salesforce token exchange failed:", errBody);
-        return res.send(`
-          <html><body style="font-family:system-ui;padding:2rem">
-            <h2 style="color:#dc2626">Connection Failed</h2>
-            <p>Salesforce returned an error during token exchange:</p>
-            <pre style="background:#f3f4f6;padding:1rem;border-radius:8px;overflow-x:auto">${errBody}</pre>
-            <p>Please close this window and try again.</p>
-          </body></html>
-        `);
-      }
-
-      const tokens = await tokenResponse.json() as {
-        access_token: string;
-        refresh_token?: string;
-        instance_url: string;
-        id: string;
-      };
-
-      // Persist tokens — the real instance_url from Salesforce may differ
-      storage.updateOrg(orgId, {
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token || null,
-        instanceUrl: tokens.instance_url || org.instanceUrl,
-        status: "connected",
-        connectedAt: new Date().toISOString(),
-      });
-
-      res.send(`
-        <html><body style="font-family:system-ui;padding:2rem;text-align:center">
-          <h2 style="color:#16a34a">Connected Successfully</h2>
-          <p>Your Salesforce org is now connected. You can close this window and return to the app.</p>
-          <script>setTimeout(function(){ window.close(); }, 2000);</script>
-        </body></html>
-      `);
-    } catch (error: any) {
-      console.error("OAuth callback error:", error);
-      res.status(500).send(`
-        <html><body style="font-family:system-ui;padding:2rem">
-          <h2 style="color:#dc2626">Connection Error</h2>
-          <p>${error.message || "An unexpected error occurred."}</p>
-          <p>Please close this window and try again.</p>
-        </body></html>
-      `);
-    }
   });
 
   // Token refresh endpoint

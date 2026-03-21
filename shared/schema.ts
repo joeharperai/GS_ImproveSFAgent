@@ -231,6 +231,34 @@ export const insertChangeRequestSchema = createInsertSchema(changeRequests).omit
 export type InsertChangeRequest = z.infer<typeof insertChangeRequestSchema>;
 export type ChangeRequest = typeof changeRequests.$inferSelect;
 
+// Users — built-in authentication
+export const users = sqliteTable("users", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  email: text("email").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  salt: text("salt").notNull(),
+  displayName: text("display_name").notNull(),
+  role: text("role").notNull().default("user"), // admin | user
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertUserSchema = createInsertSchema(users).omit({ id: true });
+export type InsertUser = z.infer<typeof insertUserSchema>;
+export type User = typeof users.$inferSelect;
+
+// Sessions — token-based auth sessions
+export const sessions = sqliteTable("sessions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  token: text("token").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertSessionSchema = createInsertSchema(sessions).omit({ id: true });
+export type InsertSession = z.infer<typeof insertSessionSchema>;
+export type Session = typeof sessions.$inferSelect;
+
 // Agent step log entry type (not a table, stored as JSON in agentRuns.stepsJson)
 export interface AgentStep {
   id: string;
