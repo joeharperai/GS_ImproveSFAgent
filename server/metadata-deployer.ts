@@ -596,3 +596,131 @@ async function pollDeployStatus(
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+// ============================================================
+// DESTRUCTIVE DEPLOY (for rollback / component removal)
+// ============================================================
+
+export async function buildDestructiveDeployZip(components: MetadataComponent[]): Promise<Buffer> {
+  const zip = new JSZip();
+
+  // Empty package.xml — required for destructive deploys
+  zip.file("package.xml", `<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+  <version>${API_VERSION}</version>
+</Package>`);
+
+  // destructiveChanges.xml lists what to delete
+  zip.file("destructiveChanges.xml", generatePackageXml(components));
+
+  const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  return buffer;
+}
+
+export async function undeployFromOrg(
+  org: SfOrg,
+  components: MetadataComponent[],
+  onProgress?: ProgressCallback
+): Promise<DeployResult> {
+  if (!org.accessToken || !org.instanceUrl) {
+    return {
+      success: false,
+      errors: [{ componentType: "N/A", apiName: "N/A", problem: "Org not connected — missing access token or instance URL" }],
+    };
+  }
+
+  onProgress?.({
+    status: "Packaging",
+    done: false,
+    stateDetail: `Packaging destructive changes for ${components.length} components...`,
+  });
+
+  const zipBuffer = await buildDestructiveDeployZip(components);
+
+  onProgress?.({
+    status: "Uploading",
+    done: false,
+    stateDetail: "Uploading destructive deployment package to Salesforce...",
+  });
+
+  const deployId = await initiateDestructiveDeploy(org, zipBuffer);
+
+  if (!deployId) {
+    return {
+      success: false,
+      errors: [{ componentType: "N/A", apiName: "N/A", problem: "Failed to initiate destructive deployment" }],
+    };
+  }
+
+  onProgress?.({
+    status: "InProgress",
+    done: false,
+    stateDetail: `Destructive deployment ${deployId} initiated, polling for status...`,
+  });
+
+  return await pollDeployStatus(org, deployId, onProgress);
+}
+
+async function initiateDestructiveDeploy(org: SfOrg, zipBuffer: Buffer): Promise<string | null> {
+  const boundary = "----GS_ImproveSFAgent_Destructive_" + Date.now();
+
+  const deployOptions = JSON.stringify({
+    deployOptions: {
+      allowMissingFiles: false,
+      autoUpdatePackage: false,
+      checkOnly: false,
+      ignoreWarnings: false,
+      performRetrieve: false,
+      purgeOnDelete: true,
+      rollbackOnError: true,
+      singlePackage: true,
+      testLevel: "NoTestRun",
+    },
+  });
+
+  const parts: Buffer[] = [];
+
+  parts.push(Buffer.from(
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="json"\r\n` +
+    `Content-Type: application/json\r\n\r\n` +
+    deployOptions + `\r\n`
+  ));
+
+  parts.push(Buffer.from(
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="file"; filename="destructive.zip"\r\n` +
+    `Content-Type: application/zip\r\n\r\n`
+  ));
+  parts.push(zipBuffer);
+  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+  const body = Buffer.concat(parts);
+
+  try {
+    const response = await fetch(
+      `${org.instanceUrl}/services/data/v${API_VERSION}/metadata/deployRequest`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${org.accessToken}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": body.length.toString(),
+        },
+        body: body,
+      }
+    );
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error(`Destructive deploy initiation failed (${response.status}): ${errText}`);
+      return null;
+    }
+
+    const result = await response.json() as any;
+    return result.id || result.deployResult?.id || null;
+  } catch (err: any) {
+    console.error("Destructive deploy initiation error:", err.message);
+    return null;
+  }
+}

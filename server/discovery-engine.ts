@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { storage } from "./storage";
 import type { SfOrg } from "@shared/schema";
+import { trackApiCall, canMakeApiCall, isApproachingLimit, parseSforceLimitHeader, setLimitFromEdition } from "./rate-limiter";
 
 const client = new Anthropic();
 
@@ -13,14 +14,29 @@ interface ScanProgress {
 
 type ProgressCallback = (progress: ScanProgress) => void;
 
-// Helper to make authenticated Salesforce API calls
+// Helper to make authenticated Salesforce API calls (with rate limit tracking)
 async function sfFetch(org: SfOrg, path: string): Promise<any> {
+  if (org.id && !canMakeApiCall(org.id)) {
+    throw new Error(`API rate limit reached for org ${org.name} — daily limit exhausted. Try again tomorrow.`);
+  }
+
   const response = await fetch(`${org.instanceUrl}${path}`, {
     headers: {
       Authorization: `Bearer ${org.accessToken}`,
       "Content-Type": "application/json",
     },
   });
+
+  // Track the API call
+  if (org.id) {
+    trackApiCall(org.id);
+    // Parse Salesforce rate limit header
+    const limitHeader = response.headers.get("sforce-limit-info");
+    if (limitHeader) {
+      parseSforceLimitHeader(org.id, limitHeader);
+    }
+  }
+
   if (!response.ok) {
     const errText = await response.text();
     throw new Error(`SF API error ${response.status}: ${errText}`);
@@ -338,10 +354,16 @@ export async function executeOrgDiscovery(
       if (orgInfo.length > 0 && orgInfo[0].OrganizationType) {
         const edition = orgInfo[0].OrganizationType as string;
         storage.updateOrg(orgId, { orgEdition: edition });
+        setLimitFromEdition(orgId, edition);
         onProgress({ phase: "edition", message: `Detected edition: ${edition}`, totalComponents: totalDiscovered, describedComponents: 0 });
       }
     } catch (_e) {
       // Organization object query may fail on some editions — skip
+    }
+
+    // Emit rate limit warning if approaching limit
+    if (isApproachingLimit(orgId)) {
+      onProgress({ phase: "rate_limit", message: "WARNING: Approaching Salesforce API daily limit (>80% used)", totalComponents: totalDiscovered, describedComponents: 0 });
     }
 
     // ========== PHASE 11: AI Descriptions (batch) ==========

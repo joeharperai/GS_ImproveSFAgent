@@ -6,6 +6,9 @@ import { executeOrgDiscovery } from "./discovery-engine";
 import { executeHealthAssessment } from "./health-engine";
 import { generateChangeProposal, rollbackChange } from "./change-engine";
 import { generateSalt, hashPassword, verifyPassword, createUserSession, requireAuth } from "./auth";
+import { deployToOrg, undeployFromOrg } from "./metadata-deployer";
+import { enqueueDeployment, processQueue, getQueueStatus } from "./deploy-queue";
+import { getApiUsage } from "./rate-limiter";
 import Anthropic from "@anthropic-ai/sdk";
 import type { AgentStep } from "@shared/schema";
 
@@ -728,9 +731,9 @@ export function registerRoutes(server: Server, app: Express) {
   });
 
   // Rollback
-  app.post("/api/changes/:id/rollback", (req, res) => {
+  app.post("/api/changes/:id/rollback", async (req, res) => {
     try {
-      rollbackChange(parseInt(req.params.id));
+      await rollbackChange(parseInt(req.params.id));
       const cr = storage.getChangeRequest(parseInt(req.params.id));
       res.json(cr);
     } catch (error: any) {
@@ -1190,6 +1193,150 @@ Follow Salesforce Metadata API v60.0 format.`
       clearInterval(keepAlive);
       clients?.delete(emit);
     });
+  });
+
+  // ====== DEPLOYMENT ROLLBACK (destructive changes) ======
+  app.post("/api/deployments/:id/rollback", async (req, res) => {
+    const deployment = storage.getDeployment(parseInt(req.params.id));
+    if (!deployment) return res.status(404).json({ error: "Deployment not found" });
+
+    const org = storage.getOrg(deployment.orgId);
+    if (!org || !org.accessToken) {
+      return res.status(400).json({ error: "Org not connected — cannot perform rollback" });
+    }
+
+    const componentIds: number[] = JSON.parse(deployment.componentsJson);
+    const components = componentIds
+      .map(id => storage.getComponent(id))
+      .filter(Boolean) as any[];
+
+    if (components.length === 0) {
+      return res.status(400).json({ error: "No components found for this deployment" });
+    }
+
+    try {
+      const result = await undeployFromOrg(org, components);
+      if (result.success) {
+        storage.updateDeployment(deployment.id, {
+          status: "rolled_back",
+          completedAt: new Date().toISOString(),
+        });
+      }
+      res.json(result);
+    } catch (error: any) {
+      res.status(422).json({ error: "Rollback failed", details: error.message });
+    }
+  });
+
+  // ====== DEPLOYMENT SNAPSHOTS (diff comparison) ======
+  app.get("/api/deployments/:id/snapshots", (req, res) => {
+    const snapshots = storage.getDeploymentSnapshots(parseInt(req.params.id));
+    res.json(snapshots);
+  });
+
+  app.get("/api/deployments/:id/diff", (req, res) => {
+    const snapshots = storage.getDeploymentSnapshots(parseInt(req.params.id));
+    const diffs = snapshots.map(s => ({
+      id: s.id,
+      componentApiName: s.componentApiName,
+      componentType: s.componentType,
+      changeType: s.changeType,
+      before: s.beforeMetadata,
+      after: s.afterMetadata,
+    }));
+    res.json(diffs);
+  });
+
+  // ====== SANDBOX-TO-SANDBOX PROMOTION ======
+  app.post("/api/deployments/:id/promote", async (req, res) => {
+    const { targetOrgId } = req.body;
+    if (!targetOrgId) return res.status(400).json({ error: "targetOrgId is required" });
+
+    const deployment = storage.getDeployment(parseInt(req.params.id));
+    if (!deployment) return res.status(404).json({ error: "Deployment not found" });
+
+    const targetOrg = storage.getOrg(targetOrgId);
+    if (!targetOrg || !targetOrg.accessToken) {
+      return res.status(400).json({ error: "Target org not connected" });
+    }
+
+    const sourceOrg = storage.getOrg(deployment.orgId);
+
+    const componentIds: number[] = JSON.parse(deployment.componentsJson);
+    const components = componentIds
+      .map(id => storage.getComponent(id))
+      .filter(Boolean) as any[];
+
+    if (components.length === 0) {
+      return res.status(400).json({ error: "No components found for this deployment" });
+    }
+
+    const promotion = storage.createPromotion({
+      sourceDeploymentId: deployment.id,
+      sourceOrgId: deployment.orgId,
+      targetOrgId,
+      status: "promoting",
+      componentsJson: JSON.stringify(componentIds),
+      logJson: JSON.stringify([{ timestamp: new Date().toISOString(), message: `Promoting ${components.length} components from ${sourceOrg?.name || "source"} to ${targetOrg.name}` }]),
+      createdAt: new Date().toISOString(),
+    });
+
+    try {
+      const result = await deployToOrg(targetOrg, components);
+      const logs = JSON.parse(promotion.logJson);
+      logs.push({ timestamp: new Date().toISOString(), message: result.success ? "Promotion successful" : `Promotion failed: ${result.errors.map(e => e.problem).join(", ")}` });
+
+      storage.updatePromotion(promotion.id, {
+        status: result.success ? "success" : "failed",
+        logJson: JSON.stringify(logs),
+        completedAt: new Date().toISOString(),
+      });
+
+      res.json({ promotion: storage.getPromotion(promotion.id), deployResult: result });
+    } catch (error: any) {
+      storage.updatePromotion(promotion.id, {
+        status: "failed",
+        logJson: JSON.stringify([{ timestamp: new Date().toISOString(), message: `Error: ${error.message}` }]),
+        completedAt: new Date().toISOString(),
+      });
+      res.status(422).json({ error: "Promotion failed", details: error.message });
+    }
+  });
+
+  app.get("/api/deployments/:id/promotions", (req, res) => {
+    res.json(storage.getPromotionsByDeployment(parseInt(req.params.id)));
+  });
+
+  // ====== DEPLOYMENT QUEUE ======
+  app.get("/api/orgs/:id/deploy-queue", (req, res) => {
+    res.json(getQueueStatus(parseInt(req.params.id)));
+  });
+
+  app.post("/api/orgs/:id/deploy-queue", (req, res) => {
+    const orgId = parseInt(req.params.id);
+    const { requirementId, componentIds, checkOnly, priority } = req.body;
+    if (!componentIds || !Array.isArray(componentIds) || componentIds.length === 0) {
+      return res.status(400).json({ error: "componentIds array is required" });
+    }
+
+    const item = enqueueDeployment(orgId, requirementId || null, componentIds, { checkOnly, priority });
+    res.status(201).json(item);
+  });
+
+  app.delete("/api/deploy-queue/:id", (req, res) => {
+    const item = storage.getDeployQueueItem(parseInt(req.params.id));
+    if (!item) return res.status(404).json({ error: "Queue item not found" });
+    if (item.status === "running") {
+      return res.status(400).json({ error: "Cannot cancel a running deployment" });
+    }
+    storage.deleteDeployQueueItem(item.id);
+    res.json({ success: true });
+  });
+
+  // ====== API RATE LIMIT USAGE ======
+  app.get("/api/orgs/:id/api-usage", (req, res) => {
+    const usage = getApiUsage(parseInt(req.params.id));
+    res.json(usage);
   });
 
   // ====== DASHBOARD STATS ======

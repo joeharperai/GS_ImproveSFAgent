@@ -259,6 +259,57 @@ export const insertSessionSchema = createInsertSchema(sessions).omit({ id: true 
 export type InsertSession = z.infer<typeof insertSessionSchema>;
 export type Session = typeof sessions.$inferSelect;
 
+// Deployment snapshots — before/after metadata for diff comparison
+export const deploymentSnapshots = sqliteTable("deployment_snapshots", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  deploymentId: integer("deployment_id").notNull(),
+  componentApiName: text("component_api_name").notNull(),
+  componentType: text("component_type").notNull(),
+  beforeMetadata: text("before_metadata"), // null if new component
+  afterMetadata: text("after_metadata").notNull(),
+  changeType: text("change_type").notNull(), // "created" | "modified" | "deleted"
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertDeploymentSnapshotSchema = createInsertSchema(deploymentSnapshots).omit({ id: true });
+export type InsertDeploymentSnapshot = z.infer<typeof insertDeploymentSnapshotSchema>;
+export type DeploymentSnapshot = typeof deploymentSnapshots.$inferSelect;
+
+// Promotions — sandbox-to-sandbox or sandbox-to-production
+export const promotions = sqliteTable("promotions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  sourceDeploymentId: integer("source_deployment_id").notNull(),
+  sourceOrgId: integer("source_org_id").notNull(),
+  targetOrgId: integer("target_org_id").notNull(),
+  status: text("status").notNull().default("pending"), // pending | promoting | success | failed
+  componentsJson: text("components_json").notNull().default("[]"),
+  logJson: text("log_json").notNull().default("[]"),
+  createdAt: text("created_at").notNull(),
+  completedAt: text("completed_at"),
+});
+
+export const insertPromotionSchema = createInsertSchema(promotions).omit({ id: true });
+export type InsertPromotion = z.infer<typeof insertPromotionSchema>;
+export type Promotion = typeof promotions.$inferSelect;
+
+// Deploy queue — ensures one deploy per org at a time
+export const deployQueue = sqliteTable("deploy_queue", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  orgId: integer("org_id").notNull(),
+  requirementId: integer("requirement_id"),
+  status: text("status").notNull().default("queued"), // queued | running | completed | failed
+  priority: integer("priority").notNull().default(0),
+  payload: text("payload").notNull(), // JSON with component IDs and deploy options
+  result: text("result"), // JSON with deploy result
+  createdAt: text("created_at").notNull(),
+  startedAt: text("started_at"),
+  completedAt: text("completed_at"),
+});
+
+export const insertDeployQueueItemSchema = createInsertSchema(deployQueue).omit({ id: true });
+export type InsertDeployQueueItem = z.infer<typeof insertDeployQueueItemSchema>;
+export type DeployQueueItem = typeof deployQueue.$inferSelect;
+
 // Agent step log entry type (not a table, stored as JSON in agentRuns.stepsJson)
 export interface AgentStep {
   id: string;

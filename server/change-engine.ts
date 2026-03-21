@@ -1,5 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { storage } from "./storage";
+import { undeployFromOrg } from "./metadata-deployer";
+import type { MetadataComponent } from "@shared/schema";
 
 const client = new Anthropic();
 
@@ -162,9 +164,40 @@ function generateDiff(original: string, proposed: string): any[] {
 }
 
 // Rollback a deployed change
-export function rollbackChange(changeRequestId: number): void {
+export async function rollbackChange(changeRequestId: number): Promise<void> {
   const cr = storage.getChangeRequest(changeRequestId);
   if (!cr) throw new Error("Change request not found");
+
+  // If the change was actually deployed and we have a connected org, attempt real rollback
+  if ((cr.deployedToSandbox || cr.deployedToProduction) && cr.targetApiName && cr.targetType) {
+    const orgId = cr.deployedToProduction ? cr.productionOrgId : cr.sandboxOrgId;
+    const org = orgId ? storage.getOrg(orgId) : null;
+
+    if (org && org.status === "connected" && org.accessToken) {
+      // Build a minimal MetadataComponent for the destructive deploy
+      const component: MetadataComponent = {
+        id: 0,
+        requirementId: 0,
+        componentType: cr.targetType,
+        apiName: cr.targetApiName,
+        label: cr.targetApiName,
+        metadataXml: cr.originalCode || "",
+        status: "deployed",
+        deploymentLog: null,
+        createdAt: new Date().toISOString(),
+      };
+
+      // If we have original code, redeploy it (restore). Otherwise, use destructive deploy to remove.
+      if (cr.originalCode) {
+        // Restore the original code by deploying it back
+        const { deployToOrg } = await import("./metadata-deployer");
+        await deployToOrg(org, [component]);
+      } else {
+        // No original code = component was newly created, so remove it
+        await undeployFromOrg(org, [component]);
+      }
+    }
+  }
 
   storage.updateChangeRequest(changeRequestId, {
     status: "rolled_back",

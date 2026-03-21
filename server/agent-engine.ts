@@ -665,6 +665,14 @@ async function runDeployment(
     { timestamp: new Date().toISOString(), message: "Metadata API ZIP deployment initiated", level: "info" },
   ];
 
+  // Capture before-metadata for snapshot diffing
+  const beforeMetadataMap = new Map<string, string | null>();
+  const orgInventory = storage.getOrgInventory(org.id);
+  for (const comp of components) {
+    const existing = orgInventory.find(item => item.apiName === comp.apiName && item.category === comp.componentType);
+    beforeMetadataMap.set(comp.apiName, existing?.sourceCode || existing?.metadataJson || null);
+  }
+
   // List all components being deployed
   for (const comp of components) {
     emitAndLog(runId, emit, makeStep("deploying", "packaging", `Packaging ${comp.componentType}: ${comp.label} (${comp.apiName})`, "info"));
@@ -682,7 +690,7 @@ async function runDeployment(
       emitAndLog(runId, emit, makeStep("deploying", "deploy_success", `${comp.label} deployed (simulated)`, "success"));
     }
 
-    storage.createDeployment({
+    const simDep = storage.createDeployment({
       requirementId: requirement.id,
       orgId: org.id,
       status: "success",
@@ -690,6 +698,20 @@ async function runDeployment(
       logJson: JSON.stringify(deploymentLogs),
       startedAt: new Date().toISOString(),
     });
+
+    // Create deployment snapshots
+    for (const comp of components) {
+      const before = beforeMetadataMap.get(comp.apiName);
+      storage.createDeploymentSnapshot({
+        deploymentId: simDep.id,
+        componentApiName: comp.apiName,
+        componentType: comp.componentType,
+        beforeMetadata: before || null,
+        afterMetadata: comp.metadataXml || "",
+        changeType: before ? "modified" : "created",
+        createdAt: new Date().toISOString(),
+      });
+    }
 
     return { success: true, errors: [] };
   }
@@ -752,7 +774,7 @@ async function runDeployment(
     }
 
     // Create deployment record
-    storage.createDeployment({
+    const realDep = storage.createDeployment({
       requirementId: requirement.id,
       orgId: org.id,
       status: result.success ? "success" : errors.length < components.length ? "partial" : "failed",
@@ -760,6 +782,20 @@ async function runDeployment(
       logJson: JSON.stringify(deploymentLogs),
       startedAt: new Date().toISOString(),
     });
+
+    // Create deployment snapshots
+    for (const comp of components) {
+      const before = beforeMetadataMap.get(comp.apiName);
+      storage.createDeploymentSnapshot({
+        deploymentId: realDep.id,
+        componentApiName: comp.apiName,
+        componentType: comp.componentType,
+        beforeMetadata: before || null,
+        afterMetadata: comp.metadataXml || "",
+        changeType: before ? "modified" : "created",
+        createdAt: new Date().toISOString(),
+      });
+    }
 
     return { success: result.success, errors };
   } catch (e: any) {

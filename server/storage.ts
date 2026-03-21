@@ -4,6 +4,7 @@ import { eq, desc, like, or, and } from "drizzle-orm";
 import {
   customers, sfOrgs, requirements, analyses, metadataComponents, deployments, agentRuns,
   orgScans, orgInventory, healthAssessments, healthFindings, changeRequests, users, sessions,
+  deploymentSnapshots, promotions, deployQueue,
   type InsertCustomer, type Customer,
   type InsertSfOrg, type SfOrg,
   type InsertRequirement, type Requirement,
@@ -18,6 +19,9 @@ import {
   type InsertChangeRequest, type ChangeRequest,
   type InsertUser, type User,
   type InsertSession, type Session,
+  type InsertDeploymentSnapshot, type DeploymentSnapshot,
+  type InsertPromotion, type Promotion,
+  type InsertDeployQueueItem, type DeployQueueItem,
 } from "@shared/schema";
 
 const DB_PATH = process.env.DATABASE_PATH || "sf_deploy.db";
@@ -197,6 +201,39 @@ sqlite.exec(`
     created_at TEXT NOT NULL,
     updated_at TEXT
   );
+  CREATE TABLE IF NOT EXISTS deployment_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deployment_id INTEGER NOT NULL,
+    component_api_name TEXT NOT NULL,
+    component_type TEXT NOT NULL,
+    before_metadata TEXT,
+    after_metadata TEXT NOT NULL,
+    change_type TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS promotions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_deployment_id INTEGER NOT NULL,
+    source_org_id INTEGER NOT NULL,
+    target_org_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    components_json TEXT NOT NULL DEFAULT '[]',
+    log_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS deploy_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL,
+    requirement_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'queued',
+    priority INTEGER NOT NULL DEFAULT 0,
+    payload TEXT NOT NULL,
+    result TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+  );
 `);
 
 // Migrations: add columns if missing
@@ -305,6 +342,28 @@ export interface IStorage {
   updateChangeRequest(id: number, data: Partial<InsertChangeRequest>): ChangeRequest | undefined;
   deleteChangeRequest(id: number): void;
   getAllChangeRequests(): ChangeRequest[];
+
+  // Deployment Snapshots
+  getDeploymentSnapshots(deploymentId: number): DeploymentSnapshot[];
+  createDeploymentSnapshot(snapshot: InsertDeploymentSnapshot): DeploymentSnapshot;
+
+  // Promotions
+  getPromotion(id: number): Promotion | undefined;
+  getPromotionsByDeployment(deploymentId: number): Promotion[];
+  createPromotion(promotion: InsertPromotion): Promotion;
+  updatePromotion(id: number, data: Partial<InsertPromotion>): Promotion | undefined;
+
+  // Deploy Queue
+  getDeployQueue(orgId: number): DeployQueueItem[];
+  getDeployQueueItem(id: number): DeployQueueItem | undefined;
+  getNextQueuedDeploy(orgId: number): DeployQueueItem | undefined;
+  getRunningDeploy(orgId: number): DeployQueueItem | undefined;
+  createDeployQueueItem(item: InsertDeployQueueItem): DeployQueueItem;
+  updateDeployQueueItem(id: number, data: Partial<InsertDeployQueueItem>): DeployQueueItem | undefined;
+  deleteDeployQueueItem(id: number): void;
+
+  // Deployments (additional)
+  getDeployment(id: number): Deployment | undefined;
 }
 
 export class SqliteStorage implements IStorage {
@@ -546,6 +605,61 @@ export class SqliteStorage implements IStorage {
   }
   getAllChangeRequests(): ChangeRequest[] {
     return db.select().from(changeRequests).orderBy(desc(changeRequests.id)).all();
+  }
+
+  // Deployment Snapshots
+  getDeploymentSnapshots(deploymentId: number): DeploymentSnapshot[] {
+    return db.select().from(deploymentSnapshots).where(eq(deploymentSnapshots.deploymentId, deploymentId)).all();
+  }
+  createDeploymentSnapshot(snapshot: InsertDeploymentSnapshot): DeploymentSnapshot {
+    return db.insert(deploymentSnapshots).values(snapshot).returning().get();
+  }
+
+  // Promotions
+  getPromotion(id: number): Promotion | undefined {
+    return db.select().from(promotions).where(eq(promotions.id, id)).get();
+  }
+  getPromotionsByDeployment(deploymentId: number): Promotion[] {
+    return db.select().from(promotions).where(eq(promotions.sourceDeploymentId, deploymentId)).all();
+  }
+  createPromotion(promotion: InsertPromotion): Promotion {
+    return db.insert(promotions).values(promotion).returning().get();
+  }
+  updatePromotion(id: number, data: Partial<InsertPromotion>): Promotion | undefined {
+    return db.update(promotions).set(data).where(eq(promotions.id, id)).returning().get();
+  }
+
+  // Deploy Queue
+  getDeployQueue(orgId: number): DeployQueueItem[] {
+    return db.select().from(deployQueue).where(eq(deployQueue.orgId, orgId)).orderBy(deployQueue.priority, deployQueue.id).all();
+  }
+  getDeployQueueItem(id: number): DeployQueueItem | undefined {
+    return db.select().from(deployQueue).where(eq(deployQueue.id, id)).get();
+  }
+  getNextQueuedDeploy(orgId: number): DeployQueueItem | undefined {
+    return db.select().from(deployQueue)
+      .where(and(eq(deployQueue.orgId, orgId), eq(deployQueue.status, "queued")))
+      .orderBy(desc(deployQueue.priority), deployQueue.id)
+      .get();
+  }
+  getRunningDeploy(orgId: number): DeployQueueItem | undefined {
+    return db.select().from(deployQueue)
+      .where(and(eq(deployQueue.orgId, orgId), eq(deployQueue.status, "running")))
+      .get();
+  }
+  createDeployQueueItem(item: InsertDeployQueueItem): DeployQueueItem {
+    return db.insert(deployQueue).values(item).returning().get();
+  }
+  updateDeployQueueItem(id: number, data: Partial<InsertDeployQueueItem>): DeployQueueItem | undefined {
+    return db.update(deployQueue).set(data).where(eq(deployQueue.id, id)).returning().get();
+  }
+  deleteDeployQueueItem(id: number): void {
+    db.delete(deployQueue).where(eq(deployQueue.id, id)).run();
+  }
+
+  // Deployments (additional)
+  getDeployment(id: number): Deployment | undefined {
+    return db.select().from(deployments).where(eq(deployments.id, id)).get();
   }
 }
 
