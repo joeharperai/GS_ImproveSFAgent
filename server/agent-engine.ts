@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { storage } from "./storage";
+import { deployToOrg } from "./metadata-deployer";
 import type { AgentStep, AgentRun, Requirement, SfOrg } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -558,7 +559,11 @@ async function runPostGenerationValidation(components: any[]): Promise<{ issues:
 }
 
 // ============================================================
-// PHASE 3: Deployment via Salesforce REST API
+// PHASE 3: Deployment via Metadata API ZIP Deploy
+// Uses the REST /metadata/deployRequest endpoint with a proper
+// ZIP package containing package.xml + all component files.
+// Supports ALL metadata types: Objects, Fields, Apex, Flows,
+// LWC, Validation Rules, Permission Sets, Layouts, and more.
 // ============================================================
 async function runDeployment(
   runId: number,
@@ -567,131 +572,129 @@ async function runDeployment(
   components: any[],
   emit: SSEEmitter
 ): Promise<{ success: boolean; errors: string[] }> {
-  emitAndLog(runId, emit, makeStep("deploying", "start", `Deploying ${components.length} components to ${org.name}...`, "thinking"));
+  emitAndLog(runId, emit, makeStep("deploying", "start", `Deploying ${components.length} components to ${org.name} via Metadata API ZIP deploy...`, "thinking"));
   storage.updateAgentRun(runId, { phase: "deploying" });
   storage.updateRequirement(requirement.id, { status: "deploying" });
 
-  const errors: string[] = [];
   const deploymentLogs: any[] = [
-    { timestamp: new Date().toISOString(), message: "Agent deployment initiated", level: "info" },
+    { timestamp: new Date().toISOString(), message: "Metadata API ZIP deployment initiated", level: "info" },
   ];
 
-  // Sort components by deployment order: Objects → Fields → Validation → Apex → Triggers → LWC → Flows → Perms
-  const typeOrder: Record<string, number> = {
-    CustomObject: 1, CustomField: 2, RecordType: 3, Layout: 4,
-    ValidationRule: 5, ApexClass: 6, ApexTrigger: 7, LWC: 8,
-    Flow: 9, PermissionSet: 10, Report: 11, Dashboard: 12,
-  };
-  const sorted = [...components].sort(
-    (a, b) => (typeOrder[a.componentType] || 50) - (typeOrder[b.componentType] || 50)
-  );
+  // List all components being deployed
+  for (const comp of components) {
+    emitAndLog(runId, emit, makeStep("deploying", "packaging", `Packaging ${comp.componentType}: ${comp.label} (${comp.apiName})`, "info"));
+  }
 
-  for (const comp of sorted) {
-    const stepDetail = `Deploying ${comp.componentType}: ${comp.label}`;
-    emitAndLog(runId, emit, makeStep("deploying", "deploy_component", stepDetail, "info"));
-
-    if (org.status === "connected" && org.accessToken) {
-      try {
-        const result = await deploySingleComponent(org, comp);
-        if (result.success) {
-          storage.updateComponent(comp.id, { status: "deployed", deploymentLog: "Deployed successfully" });
-          deploymentLogs.push({ timestamp: new Date().toISOString(), message: `✓ ${comp.label} deployed`, level: "success" });
-          emitAndLog(runId, emit, makeStep("deploying", "deploy_success", `${comp.label} deployed successfully`, "success"));
-        } else {
-          storage.updateComponent(comp.id, { status: "failed", deploymentLog: result.error });
-          errors.push(`${comp.apiName}: ${result.error}`);
-          deploymentLogs.push({ timestamp: new Date().toISOString(), message: `✗ ${comp.label}: ${result.error}`, level: "error" });
-          emitAndLog(runId, emit, makeStep("deploying", "deploy_error", `${comp.label} failed: ${result.error}`, "error"));
-        }
-      } catch (e: any) {
-        const errMsg = e.message || "Unknown error";
-        storage.updateComponent(comp.id, { status: "failed", deploymentLog: errMsg });
-        errors.push(`${comp.apiName}: ${errMsg}`);
-        emitAndLog(runId, emit, makeStep("deploying", "deploy_error", `${comp.label} failed: ${errMsg}`, "error"));
-      }
-    } else {
-      // Simulated deployment for demo / unconnected orgs
+  if (org.status !== "connected" || !org.accessToken) {
+    // Simulated deployment for demo / unconnected orgs
+    for (const comp of components) {
       storage.updateComponent(comp.id, { status: "deployed", deploymentLog: "Deployed (simulated)" });
       deploymentLogs.push({
         timestamp: new Date().toISOString(),
         message: `✓ ${comp.label} deployed (simulated — connect org for live deployment)`,
-        level: "success"
+        level: "success",
       });
       emitAndLog(runId, emit, makeStep("deploying", "deploy_success", `${comp.label} deployed (simulated)`, "success"));
     }
-  }
 
-  // Create deployment record
-  storage.createDeployment({
-    requirementId: requirement.id,
-    orgId: org.id,
-    status: errors.length === 0 ? "success" : errors.length < components.length ? "partial" : "failed",
-    componentsJson: JSON.stringify(sorted.map(c => c.id)),
-    logJson: JSON.stringify(deploymentLogs),
-    startedAt: new Date().toISOString(),
-  });
-
-  return { success: errors.length === 0, errors };
-}
-
-// Deploy a single component via Salesforce Tooling or Metadata REST API
-async function deploySingleComponent(org: SfOrg, comp: any): Promise<{ success: boolean; error?: string }> {
-  const baseUrl = org.instanceUrl;
-  const headers = {
-    "Authorization": `Bearer ${org.accessToken}`,
-    "Content-Type": "application/json",
-  };
-
-  try {
-    if (comp.componentType === "ApexClass") {
-      const res = await fetch(`${baseUrl}/services/data/v60.0/tooling/sobjects/ApexClass`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ Body: comp.metadataXml, Name: comp.apiName.replace("__c", "") }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ message: res.statusText }));
-        return { success: false, error: JSON.stringify(err) };
-      }
-      return { success: true };
-    }
-
-    if (comp.componentType === "ApexTrigger") {
-      const res = await fetch(`${baseUrl}/services/data/v60.0/tooling/sobjects/ApexTrigger`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          Body: comp.metadataXml,
-          Name: comp.apiName.replace("__c", ""),
-          TableEnumOrId: comp.metadataXml.match(/on\s+(\w+)/i)?.[1] || "Account",
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ message: res.statusText }));
-        return { success: false, error: JSON.stringify(err) };
-      }
-      return { success: true };
-    }
-
-    // For metadata types (objects, fields, flows, etc.), use Metadata REST API
-    const metadataType = comp.componentType === "CustomField" ? "CustomField"
-      : comp.componentType === "CustomObject" ? "CustomObject"
-      : comp.componentType === "Flow" ? "Flow"
-      : comp.componentType;
-
-    const res = await fetch(`${baseUrl}/services/data/v60.0/tooling/sobjects/${metadataType}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ FullName: comp.apiName, Metadata: comp.metadataXml }),
+    storage.createDeployment({
+      requirementId: requirement.id,
+      orgId: org.id,
+      status: "success",
+      componentsJson: JSON.stringify(components.map((c: any) => c.id)),
+      logJson: JSON.stringify(deploymentLogs),
+      startedAt: new Date().toISOString(),
     });
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ message: res.statusText }));
-      return { success: false, error: JSON.stringify(err) };
+    return { success: true, errors: [] };
+  }
+
+  // Real deployment via Metadata API ZIP
+  try {
+    const result = await deployToOrg(org, components, (progress) => {
+      const statusMsg = progress.stateDetail
+        || `Status: ${progress.status} (${progress.componentsDeployed || 0}/${progress.componentsTotal || 0} components)`;
+
+      emitAndLog(runId, emit, makeStep(
+        "deploying",
+        progress.done ? (progress.success ? "deploy_success" : "deploy_error") : "deploy_progress",
+        statusMsg,
+        progress.done ? (progress.success ? "success" : "error") : "info"
+      ));
+
+      deploymentLogs.push({
+        timestamp: new Date().toISOString(),
+        message: statusMsg,
+        level: progress.done ? (progress.success ? "success" : "error") : "info",
+      });
+    });
+
+    // Update individual component statuses
+    const errors: string[] = [];
+    if (result.success) {
+      for (const comp of components) {
+        storage.updateComponent(comp.id, { status: "deployed", deploymentLog: "Deployed via Metadata API" });
+      }
+      emitAndLog(runId, emit, makeStep("deploying", "deploy_success",
+        `All ${components.length} components deployed successfully (Deploy ID: ${result.id})`, "success"));
+    } else {
+      // Mark components based on errors
+      const failedApiNames = new Set(result.errors.map(e => e.apiName));
+
+      for (const comp of components) {
+        const compError = result.errors.find(e =>
+          e.apiName === comp.apiName || e.apiName.includes(comp.apiName)
+        );
+        if (compError) {
+          storage.updateComponent(comp.id, { status: "failed", deploymentLog: compError.problem });
+          errors.push(`${comp.apiName}: ${compError.problem}`);
+          emitAndLog(runId, emit, makeStep("deploying", "deploy_error",
+            `${comp.label} failed: ${compError.problem}`, "error"));
+        } else {
+          // Component not specifically flagged as failed — may have deployed
+          storage.updateComponent(comp.id, { status: result.numberComponentsDeployed ? "deployed" : "failed", deploymentLog: result.success ? "Deployed" : "Deployment had errors" });
+        }
+      }
+
+      // Add any errors not matched to specific components
+      for (const err of result.errors) {
+        if (!errors.some(e => e.includes(err.apiName))) {
+          errors.push(`${err.apiName}: ${err.problem}`);
+          emitAndLog(runId, emit, makeStep("deploying", "deploy_error",
+            `${err.componentType} ${err.apiName}: ${err.problem}`, "error"));
+        }
+      }
     }
-    return { success: true };
+
+    // Create deployment record
+    storage.createDeployment({
+      requirementId: requirement.id,
+      orgId: org.id,
+      status: result.success ? "success" : errors.length < components.length ? "partial" : "failed",
+      componentsJson: JSON.stringify(components.map((c: any) => c.id)),
+      logJson: JSON.stringify(deploymentLogs),
+      startedAt: new Date().toISOString(),
+    });
+
+    return { success: result.success, errors };
   } catch (e: any) {
-    return { success: false, error: e.message };
+    const errMsg = e.message || "Unknown deployment error";
+    emitAndLog(runId, emit, makeStep("deploying", "deploy_error", `Deployment failed: ${errMsg}`, "error"));
+
+    for (const comp of components) {
+      storage.updateComponent(comp.id, { status: "failed", deploymentLog: errMsg });
+    }
+
+    storage.createDeployment({
+      requirementId: requirement.id,
+      orgId: org.id,
+      status: "failed",
+      componentsJson: JSON.stringify(components.map((c: any) => c.id)),
+      logJson: JSON.stringify(deploymentLogs),
+      startedAt: new Date().toISOString(),
+    });
+
+    return { success: false, errors: [errMsg] };
   }
 }
 
