@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { eq, desc, like, or, and } from "drizzle-orm";
 import {
   customers, sfOrgs, requirements, analyses, metadataComponents, deployments, agentRuns,
-  orgScans, orgInventory,
+  orgScans, orgInventory, healthAssessments, healthFindings,
   type InsertCustomer, type Customer,
   type InsertSfOrg, type SfOrg,
   type InsertRequirement, type Requirement,
@@ -13,6 +13,8 @@ import {
   type InsertAgentRun, type AgentRun,
   type InsertOrgScan, type OrgScan,
   type InsertOrgInventoryItem, type OrgInventoryItem,
+  type InsertHealthAssessment, type HealthAssessment,
+  type InsertHealthFinding, type HealthFinding,
 } from "@shared/schema";
 
 const sqlite = new Database("sf_deploy.db");
@@ -122,6 +124,38 @@ sqlite.exec(`
     status TEXT NOT NULL DEFAULT 'discovered',
     discovered_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS health_assessments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL,
+    overall_grade TEXT NOT NULL DEFAULT 'N/A',
+    overall_score INTEGER NOT NULL DEFAULT 0,
+    security_score INTEGER NOT NULL DEFAULT 0,
+    performance_score INTEGER NOT NULL DEFAULT 0,
+    maintainability_score INTEGER NOT NULL DEFAULT 0,
+    scalability_score INTEGER NOT NULL DEFAULT 0,
+    total_findings INTEGER NOT NULL DEFAULT 0,
+    critical_count INTEGER NOT NULL DEFAULT 0,
+    warning_count INTEGER NOT NULL DEFAULT 0,
+    info_count INTEGER NOT NULL DEFAULT 0,
+    complexity_score TEXT DEFAULT 'Low',
+    complexity_summary TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS health_findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assessment_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    rule_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    component_api_name TEXT,
+    component_type TEXT,
+    recommendation TEXT NOT NULL,
+    code_snippet TEXT
+  );
 `);
 
 // Migrations: add columns if missing
@@ -196,6 +230,19 @@ export interface IStorage {
   updateOrgInventoryItem(id: number, data: Partial<InsertOrgInventoryItem>): OrgInventoryItem | undefined;
   deleteOrgInventory(orgId: number): void;
   searchOrgInventory(orgId: number, query: string): OrgInventoryItem[];
+
+  // Health Assessments
+  getHealthAssessments(orgId: number): HealthAssessment[];
+  getHealthAssessment(id: number): HealthAssessment | undefined;
+  getLatestHealthAssessment(orgId: number): HealthAssessment | undefined;
+  createHealthAssessment(a: InsertHealthAssessment): HealthAssessment;
+  updateHealthAssessment(id: number, data: Partial<InsertHealthAssessment>): HealthAssessment | undefined;
+
+  // Health Findings
+  getHealthFindings(assessmentId: number): HealthFinding[];
+  getHealthFindingsByCategory(assessmentId: number, category: string): HealthFinding[];
+  createHealthFinding(f: InsertHealthFinding): HealthFinding;
+  deleteHealthFindings(assessmentId: number): void;
 }
 
 export class SqliteStorage implements IStorage {
@@ -354,6 +401,39 @@ export class SqliteStorage implements IStorage {
         ),
       )
     ).all();
+  }
+
+  // Health Assessments
+  getHealthAssessments(orgId: number): HealthAssessment[] {
+    return db.select().from(healthAssessments).where(eq(healthAssessments.orgId, orgId)).orderBy(desc(healthAssessments.id)).all();
+  }
+  getHealthAssessment(id: number): HealthAssessment | undefined {
+    return db.select().from(healthAssessments).where(eq(healthAssessments.id, id)).get();
+  }
+  getLatestHealthAssessment(orgId: number): HealthAssessment | undefined {
+    return db.select().from(healthAssessments).where(eq(healthAssessments.orgId, orgId)).orderBy(desc(healthAssessments.id)).get();
+  }
+  createHealthAssessment(a: InsertHealthAssessment): HealthAssessment {
+    return db.insert(healthAssessments).values(a).returning().get();
+  }
+  updateHealthAssessment(id: number, data: Partial<InsertHealthAssessment>): HealthAssessment | undefined {
+    return db.update(healthAssessments).set(data).where(eq(healthAssessments.id, id)).returning().get();
+  }
+
+  // Health Findings
+  getHealthFindings(assessmentId: number): HealthFinding[] {
+    return db.select().from(healthFindings).where(eq(healthFindings.assessmentId, assessmentId)).all();
+  }
+  getHealthFindingsByCategory(assessmentId: number, category: string): HealthFinding[] {
+    return db.select().from(healthFindings).where(
+      and(eq(healthFindings.assessmentId, assessmentId), eq(healthFindings.category, category))
+    ).all();
+  }
+  createHealthFinding(f: InsertHealthFinding): HealthFinding {
+    return db.insert(healthFindings).values(f).returning().get();
+  }
+  deleteHealthFindings(assessmentId: number): void {
+    db.delete(healthFindings).where(eq(healthFindings.assessmentId, assessmentId)).run();
   }
 }
 

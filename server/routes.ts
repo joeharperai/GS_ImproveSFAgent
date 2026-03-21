@@ -3,6 +3,7 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { executeAgentRun, runArchitectReview } from "./agent-engine";
 import { executeOrgDiscovery } from "./discovery-engine";
+import { executeHealthAssessment } from "./health-engine";
 import Anthropic from "@anthropic-ai/sdk";
 import type { AgentStep } from "@shared/schema";
 
@@ -393,6 +394,125 @@ export function registerRoutes(server: Server, app: Express) {
     } catch (error: any) {
       res.status(422).json({ error: "AI description failed", details: error.message });
     }
+  });
+
+  // ====== HEALTH ASSESSMENT ROUTES ======
+
+  // SSE connections for health assessments
+  const healthSseClients = new Map<number, Set<(progress: any) => void>>();
+
+  // Start health assessment
+  app.post("/api/orgs/:id/assess", (req, res) => {
+    const orgId = parseInt(req.params.id);
+    const org = storage.getOrg(orgId);
+    if (!org) return res.status(404).json({ error: "Org not found" });
+
+    // Need inventory to assess
+    const inventory = storage.getOrgInventory(orgId);
+    if (inventory.length === 0) {
+      return res.status(400).json({ error: "No inventory found — run a discovery scan first" });
+    }
+
+    const assessment = storage.createHealthAssessment({
+      orgId,
+      overallGrade: "N/A",
+      overallScore: 0,
+      securityScore: 0,
+      performanceScore: 0,
+      maintainabilityScore: 0,
+      scalabilityScore: 0,
+      totalFindings: 0,
+      criticalCount: 0,
+      warningCount: 0,
+      infoCount: 0,
+      complexityScore: "Low",
+      status: "pending",
+      startedAt: new Date().toISOString(),
+    });
+
+    // Start assessment in background
+    const emitters = new Set<(progress: any) => void>();
+    healthSseClients.set(assessment.id, emitters);
+
+    executeHealthAssessment(assessment.id, orgId, (progress) => {
+      const clients = healthSseClients.get(assessment.id);
+      if (clients) {
+        for (const emit of clients) {
+          try { emit(progress); } catch {}
+        }
+      }
+    }).finally(() => {
+      setTimeout(() => healthSseClients.delete(assessment.id), 30000);
+    });
+
+    res.status(201).json(assessment);
+  });
+
+  // SSE stream for health assessment progress
+  app.get("/api/assessments/:id/stream", (req, res) => {
+    const assessmentId = parseInt(req.params.id);
+    const assessment = storage.getHealthAssessment(assessmentId);
+    if (!assessment) return res.status(404).json({ error: "Assessment not found" });
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    if (assessment.status === "completed" || assessment.status === "failed") {
+      res.write(`data: ${JSON.stringify({ phase: "done", status: assessment.status })}\n\n`);
+      res.end();
+      return;
+    }
+
+    const emit = (progress: any) => {
+      try { res.write(`data: ${JSON.stringify(progress)}\n\n`); } catch {}
+    };
+
+    let clients = healthSseClients.get(assessmentId);
+    if (!clients) {
+      clients = new Set();
+      healthSseClients.set(assessmentId, clients);
+    }
+    clients.add(emit);
+
+    const keepAlive = setInterval(() => {
+      try { res.write(": keepalive\n\n"); } catch {}
+    }, 15000);
+
+    req.on("close", () => {
+      clearInterval(keepAlive);
+      clients?.delete(emit);
+    });
+  });
+
+  // List assessments for an org
+  app.get("/api/orgs/:id/assessments", (req, res) => {
+    const assessments = storage.getHealthAssessments(parseInt(req.params.id));
+    res.json(assessments);
+  });
+
+  // Get assessment detail
+  app.get("/api/assessments/:id", (req, res) => {
+    const assessment = storage.getHealthAssessment(parseInt(req.params.id));
+    if (!assessment) return res.status(404).json({ error: "Assessment not found" });
+    res.json(assessment);
+  });
+
+  // Get findings for an assessment
+  app.get("/api/assessments/:id/findings", (req, res) => {
+    const assessmentId = parseInt(req.params.id);
+    const category = req.query.category as string | undefined;
+
+    let findings;
+    if (category) {
+      findings = storage.getHealthFindingsByCategory(assessmentId, category);
+    } else {
+      findings = storage.getHealthFindings(assessmentId);
+    }
+    res.json(findings);
   });
 
   // ====== REQUIREMENT ROUTES ======
@@ -803,6 +923,7 @@ Follow Salesforce Metadata API v60.0 format.`
     const deps = storage.getDeployments();
     const runs = storage.getAgentRuns();
     const allInventory = orgs.reduce((sum, o) => sum + storage.getOrgInventory(o.id).length, 0);
+    const allAssessments = orgs.reduce((sum, o) => sum + storage.getHealthAssessments(o.id).length, 0);
 
     res.json({
       totalRequirements: reqs.length,
@@ -825,6 +946,7 @@ Follow Salesforce Metadata API v60.0 format.`
       activeAgentRuns: runs.filter((r) => r.status === "running").length,
       successfulAgentRuns: runs.filter((r) => r.status === "success").length,
       totalInventoryItems: allInventory,
+      totalAssessments: allAssessments,
     });
   });
 }

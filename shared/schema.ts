@@ -159,6 +159,50 @@ export const insertOrgInventoryItemSchema = createInsertSchema(orgInventory).omi
 export type InsertOrgInventoryItem = z.infer<typeof insertOrgInventoryItemSchema>;
 export type OrgInventoryItem = typeof orgInventory.$inferSelect;
 
+// Health assessments — org-level health scores and grades
+export const healthAssessments = sqliteTable("health_assessments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  orgId: integer("org_id").notNull(),
+  overallGrade: text("overall_grade").notNull().default("N/A"),
+  overallScore: integer("overall_score").notNull().default(0),
+  securityScore: integer("security_score").notNull().default(0),
+  performanceScore: integer("performance_score").notNull().default(0),
+  maintainabilityScore: integer("maintainability_score").notNull().default(0),
+  scalabilityScore: integer("scalability_score").notNull().default(0),
+  totalFindings: integer("total_findings").notNull().default(0),
+  criticalCount: integer("critical_count").notNull().default(0),
+  warningCount: integer("warning_count").notNull().default(0),
+  infoCount: integer("info_count").notNull().default(0),
+  complexityScore: text("complexity_score").default("Low"),
+  complexitySummary: text("complexity_summary"),
+  status: text("status").notNull().default("pending"),
+  startedAt: text("started_at").notNull(),
+  completedAt: text("completed_at"),
+});
+
+export const insertHealthAssessmentSchema = createInsertSchema(healthAssessments).omit({ id: true });
+export type InsertHealthAssessment = z.infer<typeof insertHealthAssessmentSchema>;
+export type HealthAssessment = typeof healthAssessments.$inferSelect;
+
+// Health findings — individual rule violations
+export const healthFindings = sqliteTable("health_findings", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  assessmentId: integer("assessment_id").notNull(),
+  category: text("category").notNull(),
+  severity: text("severity").notNull(),
+  ruleId: text("rule_id").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  componentApiName: text("component_api_name"),
+  componentType: text("component_type"),
+  recommendation: text("recommendation").notNull(),
+  codeSnippet: text("code_snippet"),
+});
+
+export const insertHealthFindingSchema = createInsertSchema(healthFindings).omit({ id: true });
+export type InsertHealthFinding = z.infer<typeof insertHealthFindingSchema>;
+export type HealthFinding = typeof healthFindings.$inferSelect;
+
 // Agent step log entry type (not a table, stored as JSON in agentRuns.stepsJson)
 export interface AgentStep {
   id: string;
