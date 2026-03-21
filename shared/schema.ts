@@ -310,6 +310,58 @@ export const insertDeployQueueItemSchema = createInsertSchema(deployQueue).omit(
 export type InsertDeployQueueItem = z.infer<typeof insertDeployQueueItemSchema>;
 export type DeployQueueItem = typeof deployQueue.$inferSelect;
 
+// Scheduled deploys — timed deployments
+export const scheduledDeploys = sqliteTable("scheduled_deploys", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  requirementId: integer("requirement_id").notNull(),
+  orgId: integer("org_id").notNull(),
+  scheduledFor: text("scheduled_for").notNull(), // ISO datetime
+  status: text("status").notNull().default("scheduled"), // scheduled | deploying | completed | failed | cancelled
+  deploymentId: integer("deployment_id"), // linked after execution
+  createdBy: integer("created_by"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertScheduledDeploySchema = createInsertSchema(scheduledDeploys).omit({ id: true });
+export type InsertScheduledDeploy = z.infer<typeof insertScheduledDeploySchema>;
+export type ScheduledDeploy = typeof scheduledDeploys.$inferSelect;
+
+// Bulk jobs — Salesforce Bulk API 2.0 operations
+export const bulkJobs = sqliteTable("bulk_jobs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  orgId: integer("org_id").notNull(),
+  sfJobId: text("sf_job_id").notNull(),
+  object: text("object").notNull(),
+  operation: text("operation").notNull(),
+  status: text("status").notNull().default("created"),
+  recordsProcessed: integer("records_processed").default(0),
+  recordsFailed: integer("records_failed").default(0),
+  resultsCsv: text("results_csv"),
+  errorsCsv: text("errors_csv"),
+  createdAt: text("created_at").notNull(),
+  completedAt: text("completed_at"),
+});
+
+export const insertBulkJobSchema = createInsertSchema(bulkJobs).omit({ id: true });
+export type InsertBulkJob = z.infer<typeof insertBulkJobSchema>;
+export type BulkJob = typeof bulkJobs.$inferSelect;
+
+// Webhooks — notification endpoints
+export const webhooks = sqliteTable("webhooks", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  type: text("type").notNull().default("generic"), // slack | teams | generic
+  events: text("events").notNull().default("[]"), // JSON array of event names
+  active: integer("active").notNull().default(1),
+  createdBy: integer("created_by"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertWebhookSchema = createInsertSchema(webhooks).omit({ id: true });
+export type InsertWebhook = z.infer<typeof insertWebhookSchema>;
+export type Webhook = typeof webhooks.$inferSelect;
+
 // Agent step log entry type (not a table, stored as JSON in agentRuns.stepsJson)
 export interface AgentStep {
   id: string;

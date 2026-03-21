@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { storage } from "./storage";
+import { fireWebhook } from "./webhook-service";
 import type { OrgInventoryItem } from "@shared/schema";
 
 const client = new Anthropic();
@@ -899,6 +900,15 @@ Only flag significant issues. Return empty issues array if code looks clean.`
       complexityScore: complexity.score,
       complexitySummary: complexity.summary,
       completedAt: new Date().toISOString(),
+    });
+
+    const org = storage.getOrg(orgId);
+    fireWebhook("health_assessment", {
+      orgName: org?.name,
+      overallGrade,
+      overallScore,
+      totalFindings,
+      criticalCount,
     });
 
     onProgress(`Assessment complete: Grade ${overallGrade} (${overallScore}/100), ${totalFindings} findings`);

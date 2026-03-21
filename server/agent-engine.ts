@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { storage } from "./storage";
 import { deployToOrg } from "./metadata-deployer";
+import { fireWebhook } from "./webhook-service";
 import type { AgentStep, AgentRun, Requirement, SfOrg } from "@shared/schema";
 import { randomUUID } from "crypto";
 
@@ -1100,6 +1101,12 @@ export async function executeAgentRun(
             completedAt: new Date().toISOString(),
           });
           storage.updateRequirement(requirementId, { status: "deployed" });
+          fireWebhook("deploy_success", {
+            requirementTitle: requirement.title,
+            orgName: org.name,
+            componentsCount: components.length,
+            runId,
+          });
           emitAndLog(runId, emit, makeStep(
             "complete", "done",
             `Agent completed successfully. ${components.length} governance-compliant components deployed and verified.`,
@@ -1135,6 +1142,12 @@ export async function executeAgentRun(
       completedAt: new Date().toISOString(),
     });
     storage.updateRequirement(requirementId, { status: "failed" });
+    fireWebhook("deploy_failed", {
+      requirementTitle: requirement.title,
+      orgName: org.name,
+      errorSummary: "Exhausted retry attempts",
+      runId,
+    });
     emitAndLog(runId, emit, makeStep(
       "complete", "failed",
       "Agent exhausted all retry attempts. Review the logs and fix manually.",
@@ -1148,6 +1161,12 @@ export async function executeAgentRun(
       completedAt: new Date().toISOString(),
     });
     storage.updateRequirement(requirementId, { status: "failed" });
+    fireWebhook("deploy_failed", {
+      requirementTitle: requirement.title,
+      orgName: org?.name,
+      errorSummary: err.message,
+      runId,
+    });
     emitAndLog(runId, emit, makeStep("complete", "error", `Agent error: ${err.message}`, "error"));
   }
 }

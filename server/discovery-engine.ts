@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { storage } from "./storage";
+import { fireWebhook } from "./webhook-service";
 import type { SfOrg } from "@shared/schema";
 import { trackApiCall, canMakeApiCall, isApproachingLimit, parseSforceLimitHeader, setLimitFromEdition } from "./rate-limiter";
 
@@ -435,6 +436,12 @@ Respond with JSON only (no markdown). Format:
       totalComponents: totalDiscovered,
       describedComponents: described,
       completedAt: new Date().toISOString(),
+    });
+
+    fireWebhook("scan_complete", {
+      orgName: org.name,
+      totalComponents: totalDiscovered,
+      describedComponents: described,
     });
 
     onProgress({ phase: "complete", message: `Discovery complete: ${totalDiscovered} components found, ${described} described by AI`, totalComponents: totalDiscovered, describedComponents: described });

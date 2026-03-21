@@ -4,7 +4,7 @@ import { eq, desc, like, or, and } from "drizzle-orm";
 import {
   customers, sfOrgs, requirements, analyses, metadataComponents, deployments, agentRuns,
   orgScans, orgInventory, healthAssessments, healthFindings, changeRequests, users, sessions,
-  deploymentSnapshots, promotions, deployQueue,
+  deploymentSnapshots, promotions, deployQueue, scheduledDeploys, bulkJobs, webhooks,
   type InsertCustomer, type Customer,
   type InsertSfOrg, type SfOrg,
   type InsertRequirement, type Requirement,
@@ -22,6 +22,9 @@ import {
   type InsertDeploymentSnapshot, type DeploymentSnapshot,
   type InsertPromotion, type Promotion,
   type InsertDeployQueueItem, type DeployQueueItem,
+  type InsertScheduledDeploy, type ScheduledDeploy,
+  type InsertBulkJob, type BulkJob,
+  type InsertWebhook, type Webhook,
 } from "@shared/schema";
 
 const DB_PATH = process.env.DATABASE_PATH || "sf_deploy.db";
@@ -234,6 +237,40 @@ sqlite.exec(`
     started_at TEXT,
     completed_at TEXT
   );
+  CREATE TABLE IF NOT EXISTS scheduled_deploys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    requirement_id INTEGER NOT NULL,
+    org_id INTEGER NOT NULL,
+    scheduled_for TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    deployment_id INTEGER,
+    created_by INTEGER,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS bulk_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL,
+    sf_job_id TEXT NOT NULL,
+    object TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'created',
+    records_processed INTEGER DEFAULT 0,
+    records_failed INTEGER DEFAULT 0,
+    results_csv TEXT,
+    errors_csv TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS webhooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'generic',
+    events TEXT NOT NULL DEFAULT '[]',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER,
+    created_at TEXT NOT NULL
+  );
 `);
 
 // Migrations: add columns if missing
@@ -364,6 +401,28 @@ export interface IStorage {
 
   // Deployments (additional)
   getDeployment(id: number): Deployment | undefined;
+
+  // Scheduled Deploys
+  getScheduledDeploys(orgId: number): ScheduledDeploy[];
+  getAllScheduledDeploys(): ScheduledDeploy[];
+  getScheduledDeploy(id: number): ScheduledDeploy | undefined;
+  getPendingScheduledDeploys(): ScheduledDeploy[];
+  createScheduledDeploy(sd: InsertScheduledDeploy): ScheduledDeploy;
+  updateScheduledDeploy(id: number, data: Partial<InsertScheduledDeploy>): ScheduledDeploy | undefined;
+
+  // Bulk Jobs
+  getBulkJobs(orgId: number): BulkJob[];
+  getBulkJob(id: number): BulkJob | undefined;
+  createBulkJob(job: InsertBulkJob): BulkJob;
+  updateBulkJob(id: number, data: Partial<InsertBulkJob>): BulkJob | undefined;
+
+  // Webhooks
+  getWebhooks(): Webhook[];
+  getWebhook(id: number): Webhook | undefined;
+  getActiveWebhooksForEvent(event: string): Webhook[];
+  createWebhook(webhook: InsertWebhook): Webhook;
+  updateWebhook(id: number, data: Partial<InsertWebhook>): Webhook | undefined;
+  deleteWebhook(id: number): void;
 }
 
 export class SqliteStorage implements IStorage {
@@ -660,6 +719,71 @@ export class SqliteStorage implements IStorage {
   // Deployments (additional)
   getDeployment(id: number): Deployment | undefined {
     return db.select().from(deployments).where(eq(deployments.id, id)).get();
+  }
+
+  // Scheduled Deploys
+  getScheduledDeploys(orgId: number): ScheduledDeploy[] {
+    return db.select().from(scheduledDeploys).where(eq(scheduledDeploys.orgId, orgId)).orderBy(desc(scheduledDeploys.id)).all();
+  }
+  getAllScheduledDeploys(): ScheduledDeploy[] {
+    return db.select().from(scheduledDeploys).orderBy(desc(scheduledDeploys.id)).all();
+  }
+  getScheduledDeploy(id: number): ScheduledDeploy | undefined {
+    return db.select().from(scheduledDeploys).where(eq(scheduledDeploys.id, id)).get();
+  }
+  getPendingScheduledDeploys(): ScheduledDeploy[] {
+    // Returns all with status=scheduled where scheduledFor <= now
+    const now = new Date().toISOString();
+    return db.select().from(scheduledDeploys)
+      .where(eq(scheduledDeploys.status, "scheduled"))
+      .all()
+      .filter(sd => sd.scheduledFor <= now);
+  }
+  createScheduledDeploy(sd: InsertScheduledDeploy): ScheduledDeploy {
+    return db.insert(scheduledDeploys).values(sd).returning().get();
+  }
+  updateScheduledDeploy(id: number, data: Partial<InsertScheduledDeploy>): ScheduledDeploy | undefined {
+    return db.update(scheduledDeploys).set(data).where(eq(scheduledDeploys.id, id)).returning().get();
+  }
+
+  // Bulk Jobs
+  getBulkJobs(orgId: number): BulkJob[] {
+    return db.select().from(bulkJobs).where(eq(bulkJobs.orgId, orgId)).orderBy(desc(bulkJobs.id)).all();
+  }
+  getBulkJob(id: number): BulkJob | undefined {
+    return db.select().from(bulkJobs).where(eq(bulkJobs.id, id)).get();
+  }
+  createBulkJob(job: InsertBulkJob): BulkJob {
+    return db.insert(bulkJobs).values(job).returning().get();
+  }
+  updateBulkJob(id: number, data: Partial<InsertBulkJob>): BulkJob | undefined {
+    return db.update(bulkJobs).set(data).where(eq(bulkJobs.id, id)).returning().get();
+  }
+
+  // Webhooks
+  getWebhooks(): Webhook[] {
+    return db.select().from(webhooks).orderBy(desc(webhooks.id)).all();
+  }
+  getWebhook(id: number): Webhook | undefined {
+    return db.select().from(webhooks).where(eq(webhooks.id, id)).get();
+  }
+  getActiveWebhooksForEvent(event: string): Webhook[] {
+    return db.select().from(webhooks)
+      .where(eq(webhooks.active, 1))
+      .all()
+      .filter(w => {
+        const events: string[] = JSON.parse(w.events);
+        return events.includes(event);
+      });
+  }
+  createWebhook(webhook: InsertWebhook): Webhook {
+    return db.insert(webhooks).values(webhook).returning().get();
+  }
+  updateWebhook(id: number, data: Partial<InsertWebhook>): Webhook | undefined {
+    return db.update(webhooks).set(data).where(eq(webhooks.id, id)).returning().get();
+  }
+  deleteWebhook(id: number): void {
+    db.delete(webhooks).where(eq(webhooks.id, id)).run();
   }
 }
 

@@ -9,6 +9,11 @@ import { generateSalt, hashPassword, verifyPassword, createUserSession, requireA
 import { deployToOrg, undeployFromOrg } from "./metadata-deployer";
 import { enqueueDeployment, processQueue, getQueueStatus } from "./deploy-queue";
 import { getApiUsage } from "./rate-limiter";
+import { startScheduler } from "./scheduler";
+import { compareOrgs } from "./org-comparator";
+import { COMPLIANCE_TEMPLATES } from "./compliance-templates";
+import { createBulkJob, uploadBulkData, closeBulkJob, pollBulkJobStatus, getBulkJobResults, executeBulkQuery } from "./bulk-api";
+import { fireWebhook, sendTestWebhook } from "./webhook-service";
 import Anthropic from "@anthropic-ai/sdk";
 import type { AgentStep } from "@shared/schema";
 
@@ -1337,6 +1342,213 @@ Follow Salesforce Metadata API v60.0 format.`
   app.get("/api/orgs/:id/api-usage", (req, res) => {
     const usage = getApiUsage(parseInt(req.params.id));
     res.json(usage);
+  });
+
+  // ====== NICE P1: SCHEDULED DEPLOYS ======
+  startScheduler();
+
+  app.post("/api/scheduled-deploys", (req, res) => {
+    const { requirementId, orgId, scheduledFor } = req.body;
+    if (!requirementId || !orgId || !scheduledFor) {
+      return res.status(400).json({ error: "requirementId, orgId, and scheduledFor are required" });
+    }
+    const sd = storage.createScheduledDeploy({
+      requirementId,
+      orgId,
+      scheduledFor,
+      status: "scheduled",
+      createdBy: (req as any).user?.id || null,
+      createdAt: new Date().toISOString(),
+    });
+    res.status(201).json(sd);
+  });
+
+  app.get("/api/scheduled-deploys", (_req, res) => {
+    res.json(storage.getAllScheduledDeploys());
+  });
+
+  app.get("/api/orgs/:id/scheduled-deploys", (req, res) => {
+    res.json(storage.getScheduledDeploys(parseInt(req.params.id)));
+  });
+
+  app.delete("/api/scheduled-deploys/:id", (req, res) => {
+    const sd = storage.getScheduledDeploy(parseInt(req.params.id));
+    if (!sd) return res.status(404).json({ error: "Scheduled deploy not found" });
+    if (sd.status === "deploying") {
+      return res.status(400).json({ error: "Cannot cancel a deploy that is currently running" });
+    }
+    storage.updateScheduledDeploy(sd.id, { status: "cancelled" } as any);
+    res.json({ success: true });
+  });
+
+  // ====== NICE P2: MULTI-ORG COMPARISON ======
+  app.post("/api/orgs/compare", (req, res) => {
+    const { sourceOrgId, targetOrgId } = req.body;
+    if (!sourceOrgId || !targetOrgId) {
+      return res.status(400).json({ error: "sourceOrgId and targetOrgId are required" });
+    }
+    if (sourceOrgId === targetOrgId) {
+      return res.status(400).json({ error: "Cannot compare an org to itself" });
+    }
+    const result = compareOrgs(sourceOrgId, targetOrgId);
+    res.json(result);
+  });
+
+  // ====== NICE P3: COMPLIANCE TEMPLATES ======
+  app.get("/api/templates", (_req, res) => {
+    res.json(COMPLIANCE_TEMPLATES);
+  });
+
+  app.get("/api/templates/:id", (req, res) => {
+    const template = COMPLIANCE_TEMPLATES.find(t => t.id === req.params.id);
+    if (!template) return res.status(404).json({ error: "Template not found" });
+    res.json(template);
+  });
+
+  app.post("/api/templates/:id/apply", (req, res) => {
+    const template = COMPLIANCE_TEMPLATES.find(t => t.id === req.params.id);
+    if (!template) return res.status(404).json({ error: "Template not found" });
+
+    const { orgId } = req.body;
+    const requirement = storage.createRequirement({
+      title: template.name,
+      description: template.requirementText,
+      category: template.category,
+      priority: template.complexity === "complex" ? "high" : template.complexity === "moderate" ? "medium" : "low",
+      status: "draft",
+      orgId: orgId || null,
+      createdAt: new Date().toISOString(),
+    });
+    res.status(201).json({ requirement, template });
+  });
+
+  // ====== NICE P4: BULK API OPERATIONS ======
+  app.post("/api/orgs/:id/bulk-jobs", async (req, res) => {
+    const orgId = parseInt(req.params.id);
+    const org = storage.getOrg(orgId);
+    if (!org) return res.status(404).json({ error: "Org not found" });
+    if (!org.accessToken) return res.status(400).json({ error: "Org not connected" });
+
+    const { object, operation, externalIdField, csvData, query } = req.body;
+    if (!object && operation !== "query") {
+      return res.status(400).json({ error: "object is required for non-query operations" });
+    }
+    if (!operation) {
+      return res.status(400).json({ error: "operation is required" });
+    }
+
+    try {
+      const sfJobId = await createBulkJob(org, { object, operation, externalIdField, query });
+
+      // For non-query jobs, upload CSV data then close
+      if (operation !== "query" && csvData) {
+        await uploadBulkData(org, sfJobId, csvData);
+        await closeBulkJob(org, sfJobId);
+      }
+
+      const job = storage.createBulkJob({
+        orgId,
+        sfJobId,
+        object: object || "",
+        operation,
+        status: "processing",
+        recordsProcessed: 0,
+        recordsFailed: 0,
+        createdAt: new Date().toISOString(),
+      });
+
+      // Poll in background
+      pollBulkJobStatus(org, sfJobId, operation === "query").then(async (result) => {
+        const updates: any = {
+          status: result.state === "JobComplete" ? "completed" : "failed",
+          recordsProcessed: result.numberRecordsProcessed,
+          recordsFailed: result.numberRecordsFailed,
+          completedAt: new Date().toISOString(),
+        };
+
+        if (result.state === "JobComplete") {
+          const { successfulResults, failedResults } = await getBulkJobResults(org, sfJobId, operation === "query");
+          updates.resultsCsv = successfulResults;
+          updates.errorsCsv = failedResults;
+        }
+
+        storage.updateBulkJob(job.id, updates);
+      }).catch(() => {
+        storage.updateBulkJob(job.id, { status: "failed", completedAt: new Date().toISOString() });
+      });
+
+      res.status(201).json(job);
+    } catch (error: any) {
+      res.status(422).json({ error: "Bulk job creation failed", details: error.message });
+    }
+  });
+
+  app.get("/api/orgs/:id/bulk-jobs", (req, res) => {
+    res.json(storage.getBulkJobs(parseInt(req.params.id)));
+  });
+
+  app.get("/api/bulk-jobs/:id", (req, res) => {
+    const job = storage.getBulkJob(parseInt(req.params.id));
+    if (!job) return res.status(404).json({ error: "Bulk job not found" });
+    res.json(job);
+  });
+
+  app.get("/api/bulk-jobs/:id/results", (req, res) => {
+    const job = storage.getBulkJob(parseInt(req.params.id));
+    if (!job) return res.status(404).json({ error: "Bulk job not found" });
+    res.json({
+      resultsCsv: job.resultsCsv || "",
+      errorsCsv: job.errorsCsv || "",
+      recordsProcessed: job.recordsProcessed,
+      recordsFailed: job.recordsFailed,
+    });
+  });
+
+  // ====== NICE P5: WEBHOOK NOTIFICATIONS ======
+  app.get("/api/webhooks", (_req, res) => {
+    res.json(storage.getWebhooks());
+  });
+
+  app.post("/api/webhooks", (req, res) => {
+    const { name, url, type, events } = req.body;
+    if (!name || !url) {
+      return res.status(400).json({ error: "name and url are required" });
+    }
+    const webhook = storage.createWebhook({
+      name,
+      url,
+      type: type || "generic",
+      events: JSON.stringify(events || []),
+      active: 1,
+      createdBy: (req as any).user?.id || null,
+      createdAt: new Date().toISOString(),
+    });
+    res.status(201).json(webhook);
+  });
+
+  app.patch("/api/webhooks/:id", (req, res) => {
+    const id = parseInt(req.params.id);
+    const existing = storage.getWebhook(id);
+    if (!existing) return res.status(404).json({ error: "Webhook not found" });
+
+    const updates: any = { ...req.body };
+    if (updates.events && Array.isArray(updates.events)) {
+      updates.events = JSON.stringify(updates.events);
+    }
+    const updated = storage.updateWebhook(id, updates);
+    res.json(updated);
+  });
+
+  app.delete("/api/webhooks/:id", (req, res) => {
+    const existing = storage.getWebhook(parseInt(req.params.id));
+    if (!existing) return res.status(404).json({ error: "Webhook not found" });
+    storage.deleteWebhook(parseInt(req.params.id));
+    res.json({ success: true });
+  });
+
+  app.post("/api/webhooks/:id/test", async (req, res) => {
+    const success = await sendTestWebhook(parseInt(req.params.id));
+    res.json({ success });
   });
 
   // ====== DASHBOARD STATS ======
