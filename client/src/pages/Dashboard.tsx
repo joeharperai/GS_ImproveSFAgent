@@ -6,7 +6,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Link } from "wouter";
 import {
   FileText, Cloud, Rocket, CheckCircle, Clock, AlertTriangle,
-  ArrowRight, Zap, TrendingUp, Bot, Activity, Users,
+  ArrowRight, Zap, TrendingUp, Bot, Activity, Users, Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AgentRun } from "@shared/schema";
@@ -82,7 +82,7 @@ export default function Dashboard() {
       )}
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
@@ -165,6 +165,28 @@ export default function Dashboard() {
                 </div>
                 <div className="h-10 w-10 rounded-lg bg-orange-500/10 flex items-center justify-center">
                   <Users className="h-5 w-5 text-orange-500" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
+
+        <Link href="/discovery">
+          <Card className="cursor-pointer hover:border-primary/30 transition-colors">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-muted-foreground">Discovered Components</p>
+                  {isLoading ? (
+                    <Skeleton className="h-8 w-16 mt-1" />
+                  ) : (
+                    <p className="text-2xl font-bold" data-testid="text-inventory-items">
+                      {stats?.totalInventoryItems || 0}
+                    </p>
+                  )}
+                </div>
+                <div className="h-10 w-10 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                  <Search className="h-5 w-5 text-cyan-500" />
                 </div>
               </div>
             </CardContent>

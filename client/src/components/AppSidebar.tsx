@@ -11,7 +11,7 @@ import {
   SidebarMenuItem,
   SidebarFooter,
 } from "@/components/ui/sidebar";
-import { LayoutDashboard, FileText, Cloud, Rocket, Bot, Terminal, Users } from "lucide-react";
+import { LayoutDashboard, FileText, Cloud, Rocket, Bot, Terminal, Users, Search } from "lucide-react";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 
 const navItems = [
@@ -19,6 +19,7 @@ const navItems = [
   { label: "Customers", href: "/customers", icon: Users },
   { label: "Requirements", href: "/requirements", icon: FileText },
   { label: "Agent Console", href: "/agent", icon: Terminal },
+  { label: "Org Discovery", href: "/discovery", icon: Search },
   { label: "Org Connections", href: "/orgs", icon: Cloud },
   { label: "Deployments", href: "/deployments", icon: Rocket },
 ];

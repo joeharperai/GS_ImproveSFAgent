@@ -2,6 +2,7 @@ import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
 import { executeAgentRun, runArchitectReview } from "./agent-engine";
+import { executeOrgDiscovery } from "./discovery-engine";
 import Anthropic from "@anthropic-ai/sdk";
 import type { AgentStep } from "@shared/schema";
 
@@ -235,6 +236,162 @@ export function registerRoutes(server: Server, app: Express) {
       }
     } else {
       res.json({ success: false, message: "No credentials stored - please connect first" });
+    }
+  });
+
+  // ====== ORG DISCOVERY ROUTES ======
+
+  // SSE connections for discovery scans
+  const scanSseClients = new Map<number, Set<(progress: any) => void>>();
+
+  // Start a discovery scan
+  app.post("/api/orgs/:id/discover", (req, res) => {
+    const orgId = parseInt(req.params.id);
+    const org = storage.getOrg(orgId);
+    if (!org) return res.status(404).json({ error: "Org not found" });
+    if (!org.accessToken) return res.status(400).json({ error: "Org not connected" });
+
+    const scan = storage.createOrgScan({
+      orgId,
+      status: "pending",
+      totalComponents: 0,
+      describedComponents: 0,
+      cloudsDetectedJson: "[]",
+      packagesJson: "[]",
+      startedAt: new Date().toISOString(),
+    });
+
+    // Start discovery in background
+    const emitters = new Set<(progress: any) => void>();
+    scanSseClients.set(scan.id, emitters);
+
+    executeOrgDiscovery(scan.id, orgId, (progress) => {
+      const clients = scanSseClients.get(scan.id);
+      if (clients) {
+        for (const emit of clients) {
+          try { emit(progress); } catch {}
+        }
+      }
+    }).finally(() => {
+      setTimeout(() => scanSseClients.delete(scan.id), 30000);
+    });
+
+    res.status(201).json(scan);
+  });
+
+  // List scans for an org
+  app.get("/api/orgs/:id/scans", (req, res) => {
+    const scans = storage.getOrgScans(parseInt(req.params.id));
+    res.json(scans);
+  });
+
+  // Get scan status
+  app.get("/api/scans/:id", (req, res) => {
+    const scan = storage.getOrgScan(parseInt(req.params.id));
+    if (!scan) return res.status(404).json({ error: "Scan not found" });
+    res.json(scan);
+  });
+
+  // SSE stream for scan progress
+  app.get("/api/scans/:id/stream", (req, res) => {
+    const scanId = parseInt(req.params.id);
+    const scan = storage.getOrgScan(scanId);
+    if (!scan) return res.status(404).json({ error: "Scan not found" });
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    if (scan.status === "completed" || scan.status === "failed") {
+      res.write(`data: ${JSON.stringify({ phase: "done", message: scan.status, totalComponents: scan.totalComponents, describedComponents: scan.describedComponents })}\n\n`);
+      res.end();
+      return;
+    }
+
+    const emit = (progress: any) => {
+      try { res.write(`data: ${JSON.stringify(progress)}\n\n`); } catch {}
+    };
+
+    let clients = scanSseClients.get(scanId);
+    if (!clients) {
+      clients = new Set();
+      scanSseClients.set(scanId, clients);
+    }
+    clients.add(emit);
+
+    const keepAlive = setInterval(() => {
+      try { res.write(": keepalive\n\n"); } catch {}
+    }, 15000);
+
+    req.on("close", () => {
+      clearInterval(keepAlive);
+      clients?.delete(emit);
+    });
+  });
+
+  // Get inventory for an org (with optional filters)
+  app.get("/api/orgs/:id/inventory", (req, res) => {
+    const orgId = parseInt(req.params.id);
+    const category = req.query.category as string | undefined;
+    const search = req.query.search as string | undefined;
+
+    let items;
+    if (search) {
+      items = storage.searchOrgInventory(orgId, search);
+    } else if (category) {
+      items = storage.getOrgInventoryByCategory(orgId, category);
+    } else {
+      items = storage.getOrgInventory(orgId);
+    }
+    res.json(items);
+  });
+
+  // Get inventory summary (category counts)
+  app.get("/api/orgs/:id/inventory/summary", (req, res) => {
+    const orgId = parseInt(req.params.id);
+    const items = storage.getOrgInventory(orgId);
+    const summary: Record<string, number> = {};
+    for (const item of items) {
+      summary[item.category] = (summary[item.category] || 0) + 1;
+    }
+    res.json(summary);
+  });
+
+  // Get single inventory item
+  app.get("/api/inventory/:id", (req, res) => {
+    const item = storage.getOrgInventoryItem(parseInt(req.params.id));
+    if (!item) return res.status(404).json({ error: "Inventory item not found" });
+    res.json(item);
+  });
+
+  // Generate AI description for a single item
+  app.post("/api/inventory/:id/describe", async (req, res) => {
+    const item = storage.getOrgInventoryItem(parseInt(req.params.id));
+    if (!item) return res.status(404).json({ error: "Inventory item not found" });
+
+    try {
+      let prompt = `You are a Salesforce Technical Architect. Describe this component in 1-2 sentences. Be specific about business logic.\n\n[${item.category}] ${item.apiName} (Label: ${item.label})`;
+      if (item.sourceCode) prompt += `\nCode:\n${item.sourceCode.substring(0, 3000)}`;
+      if (item.metadataJson) prompt += `\nMetadata: ${item.metadataJson.substring(0, 1000)}`;
+
+      const message = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 512,
+        messages: [{ role: "user", content: prompt + "\n\nRespond with just the description text, no JSON wrapper." }],
+      });
+
+      const content = message.content[0];
+      if (content.type === "text") {
+        const updated = storage.updateOrgInventoryItem(item.id, { description: content.text.trim(), status: "described" });
+        res.json(updated);
+      } else {
+        res.status(422).json({ error: "Unexpected response" });
+      }
+    } catch (error: any) {
+      res.status(422).json({ error: "AI description failed", details: error.message });
     }
   });
 
@@ -645,6 +802,7 @@ Follow Salesforce Metadata API v60.0 format.`
     const orgs = storage.getOrgs();
     const deps = storage.getDeployments();
     const runs = storage.getAgentRuns();
+    const allInventory = orgs.reduce((sum, o) => sum + storage.getOrgInventory(o.id).length, 0);
 
     res.json({
       totalRequirements: reqs.length,
@@ -666,6 +824,7 @@ Follow Salesforce Metadata API v60.0 format.`
       totalAgentRuns: runs.length,
       activeAgentRuns: runs.filter((r) => r.status === "running").length,
       successfulAgentRuns: runs.filter((r) => r.status === "success").length,
+      totalInventoryItems: allInventory,
     });
   });
 }

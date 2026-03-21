@@ -12,6 +12,7 @@ import OrgConnections from "./pages/OrgConnections";
 import Deployments from "./pages/Deployments";
 import AgentConsole from "./pages/AgentConsole";
 import Customers from "./pages/Customers";
+import OrgDiscovery from "./pages/OrgDiscovery";
 import NotFound from "./pages/not-found";
 
 function AppRoutes() {
@@ -26,6 +27,7 @@ function AppRoutes() {
               <Route path="/customers" component={Customers} />
               <Route path="/requirements" component={Requirements} />
               <Route path="/requirements/:id" component={RequirementDetail} />
+              <Route path="/discovery" component={OrgDiscovery} />
               <Route path="/orgs" component={OrgConnections} />
               <Route path="/deployments" component={Deployments} />
               <Route path="/agent" component={AgentConsole} />

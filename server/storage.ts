@@ -1,8 +1,9 @@
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, like, or, and } from "drizzle-orm";
 import {
   customers, sfOrgs, requirements, analyses, metadataComponents, deployments, agentRuns,
+  orgScans, orgInventory,
   type InsertCustomer, type Customer,
   type InsertSfOrg, type SfOrg,
   type InsertRequirement, type Requirement,
@@ -10,6 +11,8 @@ import {
   type InsertMetadataComponent, type MetadataComponent,
   type InsertDeployment, type Deployment,
   type InsertAgentRun, type AgentRun,
+  type InsertOrgScan, type OrgScan,
+  type InsertOrgInventoryItem, type OrgInventoryItem,
 } from "@shared/schema";
 
 const sqlite = new Database("sf_deploy.db");
@@ -94,6 +97,31 @@ sqlite.exec(`
     started_at TEXT NOT NULL,
     completed_at TEXT
   );
+  CREATE TABLE IF NOT EXISTS org_scans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    total_components INTEGER DEFAULT 0,
+    described_components INTEGER DEFAULT 0,
+    clouds_detected_json TEXT DEFAULT '[]',
+    packages_json TEXT DEFAULT '[]',
+    error_log TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS org_inventory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    api_name TEXT NOT NULL,
+    label TEXT NOT NULL,
+    description TEXT,
+    source_code TEXT,
+    metadata_json TEXT,
+    parent_api_name TEXT,
+    status TEXT NOT NULL DEFAULT 'discovered',
+    discovered_at TEXT NOT NULL
+  );
 `);
 
 // Migrations: add columns if missing
@@ -152,6 +180,22 @@ export interface IStorage {
   getAgentRunsByRequirement(requirementId: number): AgentRun[];
   createAgentRun(run: InsertAgentRun): AgentRun;
   updateAgentRun(id: number, data: Partial<InsertAgentRun>): AgentRun | undefined;
+
+  // Org Scans
+  getOrgScans(orgId: number): OrgScan[];
+  getOrgScan(id: number): OrgScan | undefined;
+  getLatestOrgScan(orgId: number): OrgScan | undefined;
+  createOrgScan(scan: InsertOrgScan): OrgScan;
+  updateOrgScan(id: number, data: Partial<InsertOrgScan>): OrgScan | undefined;
+
+  // Org Inventory
+  getOrgInventory(orgId: number): OrgInventoryItem[];
+  getOrgInventoryByCategory(orgId: number, category: string): OrgInventoryItem[];
+  getOrgInventoryItem(id: number): OrgInventoryItem | undefined;
+  createOrgInventoryItem(item: InsertOrgInventoryItem): OrgInventoryItem;
+  updateOrgInventoryItem(id: number, data: Partial<InsertOrgInventoryItem>): OrgInventoryItem | undefined;
+  deleteOrgInventory(orgId: number): void;
+  searchOrgInventory(orgId: number, query: string): OrgInventoryItem[];
 }
 
 export class SqliteStorage implements IStorage {
@@ -258,6 +302,58 @@ export class SqliteStorage implements IStorage {
   }
   updateAgentRun(id: number, data: Partial<InsertAgentRun>): AgentRun | undefined {
     return db.update(agentRuns).set(data).where(eq(agentRuns.id, id)).returning().get();
+  }
+
+  // Org Scans
+  getOrgScans(orgId: number): OrgScan[] {
+    return db.select().from(orgScans).where(eq(orgScans.orgId, orgId)).orderBy(desc(orgScans.id)).all();
+  }
+  getOrgScan(id: number): OrgScan | undefined {
+    return db.select().from(orgScans).where(eq(orgScans.id, id)).get();
+  }
+  getLatestOrgScan(orgId: number): OrgScan | undefined {
+    return db.select().from(orgScans).where(eq(orgScans.orgId, orgId)).orderBy(desc(orgScans.id)).get();
+  }
+  createOrgScan(scan: InsertOrgScan): OrgScan {
+    return db.insert(orgScans).values(scan).returning().get();
+  }
+  updateOrgScan(id: number, data: Partial<InsertOrgScan>): OrgScan | undefined {
+    return db.update(orgScans).set(data).where(eq(orgScans.id, id)).returning().get();
+  }
+
+  // Org Inventory
+  getOrgInventory(orgId: number): OrgInventoryItem[] {
+    return db.select().from(orgInventory).where(eq(orgInventory.orgId, orgId)).all();
+  }
+  getOrgInventoryByCategory(orgId: number, category: string): OrgInventoryItem[] {
+    return db.select().from(orgInventory).where(
+      and(eq(orgInventory.orgId, orgId), eq(orgInventory.category, category))
+    ).all();
+  }
+  getOrgInventoryItem(id: number): OrgInventoryItem | undefined {
+    return db.select().from(orgInventory).where(eq(orgInventory.id, id)).get();
+  }
+  createOrgInventoryItem(item: InsertOrgInventoryItem): OrgInventoryItem {
+    return db.insert(orgInventory).values(item).returning().get();
+  }
+  updateOrgInventoryItem(id: number, data: Partial<InsertOrgInventoryItem>): OrgInventoryItem | undefined {
+    return db.update(orgInventory).set(data).where(eq(orgInventory.id, id)).returning().get();
+  }
+  deleteOrgInventory(orgId: number): void {
+    db.delete(orgInventory).where(eq(orgInventory.orgId, orgId)).run();
+  }
+  searchOrgInventory(orgId: number, query: string): OrgInventoryItem[] {
+    const pattern = `%${query}%`;
+    return db.select().from(orgInventory).where(
+      and(
+        eq(orgInventory.orgId, orgId),
+        or(
+          like(orgInventory.apiName, pattern),
+          like(orgInventory.label, pattern),
+          like(orgInventory.description, pattern),
+        ),
+      )
+    ).all();
   }
 }
 

@@ -122,6 +122,43 @@ export const insertAgentRunSchema = createInsertSchema(agentRuns).omit({ id: tru
 export type InsertAgentRun = z.infer<typeof insertAgentRunSchema>;
 export type AgentRun = typeof agentRuns.$inferSelect;
 
+// Org discovery scans — tracks each metadata discovery run
+export const orgScans = sqliteTable("org_scans", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  orgId: integer("org_id").notNull(),
+  status: text("status").notNull().default("pending"), // pending | running | completed | failed
+  totalComponents: integer("total_components").default(0),
+  describedComponents: integer("described_components").default(0),
+  cloudsDetectedJson: text("clouds_detected_json").default("[]"),
+  packagesJson: text("packages_json").default("[]"),
+  errorLog: text("error_log"),
+  startedAt: text("started_at").notNull(),
+  completedAt: text("completed_at"),
+});
+
+export const insertOrgScanSchema = createInsertSchema(orgScans).omit({ id: true });
+export type InsertOrgScan = z.infer<typeof insertOrgScanSchema>;
+export type OrgScan = typeof orgScans.$inferSelect;
+
+// Org inventory — discovered metadata components from Salesforce orgs
+export const orgInventory = sqliteTable("org_inventory", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  orgId: integer("org_id").notNull(),
+  category: text("category").notNull(),
+  apiName: text("api_name").notNull(),
+  label: text("label").notNull(),
+  description: text("description"),
+  sourceCode: text("source_code"),
+  metadataJson: text("metadata_json"),
+  parentApiName: text("parent_api_name"),
+  status: text("status").notNull().default("discovered"),
+  discoveredAt: text("discovered_at").notNull(),
+});
+
+export const insertOrgInventoryItemSchema = createInsertSchema(orgInventory).omit({ id: true });
+export type InsertOrgInventoryItem = z.infer<typeof insertOrgInventoryItemSchema>;
+export type OrgInventoryItem = typeof orgInventory.$inferSelect;
+
 // Agent step log entry type (not a table, stored as JSON in agentRuns.stepsJson)
 export interface AgentStep {
   id: string;
