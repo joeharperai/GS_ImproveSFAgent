@@ -1,9 +1,8 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useParams } from "wouter";
+import { useParams, useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -19,14 +18,15 @@ import { Link } from "wouter";
 import {
   ArrowLeft, Zap, Code, Rocket, CheckCircle, XCircle,
   AlertTriangle, Shield, Clock, FileCode, Loader2,
-  ChevronRight, Eye,
+  ChevronRight, Bot, Play,
 } from "lucide-react";
-import type { Requirement, Analysis, MetadataComponent } from "@shared/schema";
+import type { Requirement, Analysis, MetadataComponent, AgentRun } from "@shared/schema";
 
 export default function RequirementDetail() {
   const params = useParams<{ id: string }>();
   const reqId = parseInt(params.id || "0");
   const { toast } = useToast();
+  const [, navigate] = useLocation();
 
   const { data: requirement } = useQuery<Requirement>({
     queryKey: ["/api/requirements", reqId],
@@ -52,6 +52,12 @@ export default function RequirementDetail() {
     queryFn: () => apiRequest("GET", "/api/orgs").then((r) => r.json()),
   });
 
+  const { data: agentRuns = [] } = useQuery<AgentRun[]>({
+    queryKey: ["/api/requirements", reqId, "agent-runs"],
+    queryFn: () => apiRequest("GET", `/api/requirements/${reqId}/agent-runs`).then((r) => r.json()),
+    refetchInterval: 3000,
+  });
+
   const analyzeMutation = useMutation({
     mutationFn: () =>
       apiRequest("POST", `/api/requirements/${reqId}/analyze`).then((r) => r.json()),
@@ -62,11 +68,7 @@ export default function RequirementDetail() {
       toast({ title: "Analysis complete", description: "Review the AI analysis below" });
     },
     onError: (err: any) => {
-      toast({
-        title: "Analysis failed",
-        description: err.message || "Please try again",
-        variant: "destructive",
-      });
+      toast({ title: "Analysis failed", description: err.message || "Please try again", variant: "destructive" });
     },
   });
 
@@ -80,11 +82,7 @@ export default function RequirementDetail() {
       toast({ title: "Metadata generated", description: "Review and approve components" });
     },
     onError: (err: any) => {
-      toast({
-        title: "Generation failed",
-        description: err.message || "Please try again",
-        variant: "destructive",
-      });
+      toast({ title: "Generation failed", description: err.message || "Please try again", variant: "destructive" });
     },
   });
 
@@ -93,6 +91,20 @@ export default function RequirementDetail() {
       apiRequest("PATCH", `/api/components/${id}`, { status }).then((r) => r.json()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/requirements", reqId, "components"] });
+    },
+  });
+
+  const agentMutation = useMutation({
+    mutationFn: (orgId?: number) =>
+      apiRequest("POST", "/api/agent-runs", { requirementId: reqId, orgId: orgId || null }).then((r) => r.json()),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agent-runs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/requirements", reqId, "agent-runs"] });
+      toast({ title: "Agent started", description: "Redirecting to agent console..." });
+      navigate("/agent");
+    },
+    onError: (err: any) => {
+      toast({ title: "Agent failed to start", description: err.message, variant: "destructive" });
     },
   });
 
@@ -107,11 +119,7 @@ export default function RequirementDetail() {
       toast({ title: "Deployment complete", description: "Components deployed to sandbox" });
     },
     onError: (err: any) => {
-      toast({
-        title: "Deployment failed",
-        description: err.message || "Please try again",
-        variant: "destructive",
-      });
+      toast({ title: "Deployment failed", description: err.message || "Please try again", variant: "destructive" });
     },
   });
 
@@ -136,6 +144,8 @@ export default function RequirementDetail() {
 
   const approvedCount = components.filter((c) => c.status === "approved").length;
   const canDeploy = approvedCount > 0;
+  const activeAgentRun = agentRuns.find((r) => r.status === "running");
+  const hasRunBefore = agentRuns.length > 0;
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -165,8 +175,44 @@ export default function RequirementDetail() {
         </div>
       </div>
 
-      {/* Action Pipeline */}
+      {/* Agent Deploy Card */}
+      <Card className="border-primary/20 bg-gradient-to-r from-primary/[0.03] to-transparent">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                <Bot className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold">Deploy with Agent</p>
+                <p className="text-xs text-muted-foreground">
+                  AI agent will analyze, generate, deploy, test, and auto-fix — fully autonomous
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {activeAgentRun ? (
+                <Link href="/agent">
+                  <Button size="sm" variant="outline" className="gap-1.5" data-testid="button-view-agent">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    View Live Agent
+                  </Button>
+                </Link>
+              ) : (
+                <AgentStartButton
+                  orgs={orgs}
+                  onStart={(orgId) => agentMutation.mutate(orgId)}
+                  isPending={agentMutation.isPending}
+                />
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Manual Action Pipeline */}
       <div className="flex flex-wrap items-center gap-3">
+        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Manual Steps:</span>
         <Button
           data-testid="button-analyze"
           onClick={() => analyzeMutation.mutate()}
@@ -179,7 +225,7 @@ export default function RequirementDetail() {
           ) : (
             <Zap className="h-3.5 w-3.5 mr-1.5" />
           )}
-          {analyzeMutation.isPending ? "Analyzing..." : analysis ? "Re-Analyze" : "Analyze with AI"}
+          {analyzeMutation.isPending ? "Analyzing..." : analysis ? "Re-Analyze" : "Analyze"}
         </Button>
 
         {analysis && (
@@ -195,7 +241,7 @@ export default function RequirementDetail() {
             ) : (
               <Code className="h-3.5 w-3.5 mr-1.5" />
             )}
-            {generateMutation.isPending ? "Generating..." : components.length > 0 ? "Re-Generate" : "Generate Metadata"}
+            {generateMutation.isPending ? "Generating..." : components.length > 0 ? "Re-Generate" : "Generate"}
           </Button>
         )}
 
@@ -225,6 +271,11 @@ export default function RequirementDetail() {
               Components ({components.length})
             </TabsTrigger>
           )}
+          {agentRuns.length > 0 && (
+            <TabsTrigger value="history">
+              Agent History ({agentRuns.length})
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="overview" className="mt-4 space-y-4">
@@ -234,9 +285,7 @@ export default function RequirementDetail() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div>
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Description
-                </p>
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Description</p>
                 <p className="text-sm mt-1 whitespace-pre-wrap">{requirement.description}</p>
               </div>
             </CardContent>
@@ -245,11 +294,11 @@ export default function RequirementDetail() {
           {!analysis && (
             <Card className="border-dashed">
               <CardContent className="flex flex-col items-center justify-center py-10 text-center">
-                <Zap className="h-8 w-8 text-primary/40 mb-3" />
-                <p className="text-sm font-medium">Ready for AI Analysis</p>
+                <Bot className="h-8 w-8 text-primary/40 mb-3" />
+                <p className="text-sm font-medium">Ready for Deployment</p>
                 <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-                  Click "Analyze with AI" to break this requirement into Salesforce
-                  components, identify dependencies, and get best practice recommendations.
+                  Click "Deploy with Agent" above for the fully autonomous flow, or use the manual
+                  steps to analyze and generate metadata step by step.
                 </p>
               </CardContent>
             </Card>
@@ -258,19 +307,15 @@ export default function RequirementDetail() {
 
         {analysis && (
           <TabsContent value="analysis" className="mt-4 space-y-4">
-            {/* Summary */}
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">AI Summary</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-sm" data-testid="text-analysis-summary">
-                  {parsedAnalysis?.summary}
-                </p>
+                <p className="text-sm" data-testid="text-analysis-summary">{parsedAnalysis?.summary}</p>
               </CardContent>
             </Card>
 
-            {/* Proposed Components */}
             {parsedAnalysis?.components?.length > 0 && (
               <Card>
                 <CardHeader>
@@ -281,10 +326,7 @@ export default function RequirementDetail() {
                 <CardContent>
                   <div className="space-y-2">
                     {parsedAnalysis.components.map((comp: any, i: number) => (
-                      <div
-                        key={i}
-                        className="flex items-start gap-3 p-3 rounded-lg border bg-muted/30"
-                      >
+                      <div key={i} className="flex items-start gap-3 p-3 rounded-lg border bg-muted/30">
                         <div className="h-7 w-7 rounded bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                           <span className="text-xs font-bold text-primary">{comp.order || i + 1}</span>
                         </div>
@@ -295,12 +337,8 @@ export default function RequirementDetail() {
                               {comp.type}
                             </span>
                           </div>
-                          <p className="text-xs text-muted-foreground font-mono mt-0.5">
-                            {comp.apiName}
-                          </p>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {comp.description}
-                          </p>
+                          <p className="text-xs text-muted-foreground font-mono mt-0.5">{comp.apiName}</p>
+                          <p className="text-xs text-muted-foreground mt-1">{comp.description}</p>
                         </div>
                       </div>
                     ))}
@@ -309,7 +347,6 @@ export default function RequirementDetail() {
               </Card>
             )}
 
-            {/* Dependencies */}
             {parsedAnalysis?.dependencies?.length > 0 && (
               <Card>
                 <CardHeader>
@@ -328,7 +365,6 @@ export default function RequirementDetail() {
               </Card>
             )}
 
-            {/* Best Practices */}
             {parsedAnalysis?.bestPractices?.length > 0 && (
               <Card>
                 <CardHeader>
@@ -350,13 +386,12 @@ export default function RequirementDetail() {
               </Card>
             )}
 
-            {/* Risks */}
             {parsedAnalysis?.risks?.length > 0 && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
                     <AlertTriangle className="h-4 w-4 text-yellow-500" />
-                    Risks & Mitigations
+                    Risks
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -384,7 +419,7 @@ export default function RequirementDetail() {
             <div className="flex items-center gap-3 text-sm text-muted-foreground">
               <span>{approvedCount} approved</span>
               <span>·</span>
-              <span>{components.filter((c) => c.status === "pending").length} pending review</span>
+              <span>{components.filter((c) => c.status === "pending").length} pending</span>
               <span>·</span>
               <span>{components.filter((c) => c.status === "deployed").length} deployed</span>
             </div>
@@ -393,14 +428,110 @@ export default function RequirementDetail() {
               <ComponentCard
                 key={comp.id}
                 component={comp}
-                onApprove={(status) =>
-                  approveComponentMutation.mutate({ id: comp.id, status })
-                }
+                onApprove={(status) => approveComponentMutation.mutate({ id: comp.id, status })}
               />
             ))}
           </TabsContent>
         )}
+
+        {agentRuns.length > 0 && (
+          <TabsContent value="history" className="mt-4 space-y-3">
+            {agentRuns.map((run) => {
+              const steps = JSON.parse(run.stepsJson || "[]");
+              const isSuccess = run.status === "success";
+              return (
+                <Card key={run.id} data-testid={`card-agent-run-${run.id}`}>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className={`h-8 w-8 rounded-lg flex items-center justify-center ${
+                          isSuccess ? "bg-green-500/10" : run.status === "running" ? "bg-blue-500/10" : "bg-red-500/10"
+                        }`}>
+                          {run.status === "running" ? (
+                            <Loader2 className="h-4 w-4 text-blue-500 animate-spin" />
+                          ) : isSuccess ? (
+                            <CheckCircle className="h-4 w-4 text-green-500" />
+                          ) : (
+                            <XCircle className="h-4 w-4 text-red-500" />
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">Run #{run.id}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {new Date(run.startedAt).toLocaleString()} · {steps.length} steps
+                            {run.retryCount > 0 && ` · ${run.retryCount} retries`}
+                          </p>
+                        </div>
+                      </div>
+                      {run.status === "running" && (
+                        <Link href="/agent">
+                          <Button size="sm" variant="outline" className="gap-1.5">
+                            <Play className="h-3 w-3" />
+                            View Live
+                          </Button>
+                        </Link>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </TabsContent>
+        )}
       </Tabs>
+    </div>
+  );
+}
+
+function AgentStartButton({
+  orgs,
+  onStart,
+  isPending,
+}: {
+  orgs: any[];
+  onStart: (orgId?: number) => void;
+  isPending: boolean;
+}) {
+  if (orgs.length === 0) {
+    return (
+      <Button
+        size="sm"
+        onClick={() => onStart()}
+        disabled={isPending}
+        data-testid="button-start-agent"
+        className="gap-1.5"
+      >
+        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+        {isPending ? "Starting..." : "Start Agent (Demo)"}
+      </Button>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <Select onValueChange={(v) => onStart(parseInt(v))}>
+        <SelectTrigger className="h-8 w-[180px] text-xs" data-testid="select-agent-org">
+          <Bot className="h-3.5 w-3.5 mr-1" />
+          <SelectValue placeholder="Select org..." />
+        </SelectTrigger>
+        <SelectContent>
+          {orgs.map((org) => (
+            <SelectItem key={org.id} value={String(org.id)}>
+              {org.name} ({org.orgType})
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Button
+        size="sm"
+        onClick={() => onStart()}
+        disabled={isPending}
+        data-testid="button-start-agent"
+        className="gap-1.5"
+      >
+        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+        {isPending ? "Starting..." : "Start Agent"}
+      </Button>
     </div>
   );
 }
@@ -478,7 +609,7 @@ function DeployButton({
       <Link href="/orgs">
         <Button variant="outline" size="sm">
           <Rocket className="h-3.5 w-3.5 mr-1.5" />
-          Connect an Org to Deploy
+          Connect Org
         </Button>
       </Link>
     );
@@ -517,11 +648,9 @@ function StatusBadge({ status }: { status: string }) {
   };
 
   return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${
-        variants[status] || variants.draft
-      }`}
-    >
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${
+      variants[status] || variants.draft
+    }`}>
       {status}
     </span>
   );
@@ -529,7 +658,7 @@ function StatusBadge({ status }: { status: string }) {
 
 function ComponentStatusBadge({ status }: { status: string }) {
   const config: Record<string, { color: string; label: string }> = {
-    pending: { color: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400", label: "Pending Review" },
+    pending: { color: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400", label: "Pending" },
     approved: { color: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400", label: "Approved" },
     deployed: { color: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400", label: "Deployed" },
     failed: { color: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400", label: "Rejected" },
@@ -544,10 +673,6 @@ function ComponentStatusBadge({ status }: { status: string }) {
 }
 
 function SeverityDot({ severity }: { severity: string }) {
-  const colors: Record<string, string> = {
-    low: "bg-green-500",
-    medium: "bg-yellow-500",
-    high: "bg-red-500",
-  };
+  const colors: Record<string, string> = { low: "bg-green-500", medium: "bg-yellow-500", high: "bg-red-500" };
   return <span className={`h-2 w-2 rounded-full shrink-0 ${colors[severity] || colors.medium}`} />;
 }

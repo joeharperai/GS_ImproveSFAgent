@@ -1,15 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Link } from "wouter";
 import {
   FileText, Cloud, Rocket, CheckCircle, Clock, AlertTriangle,
-  ArrowRight, Zap, TrendingUp,
+  ArrowRight, Zap, TrendingUp, Bot, Activity,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import type { AgentRun } from "@shared/schema";
 
 export default function Dashboard() {
   const { data: stats, isLoading } = useQuery<any>({
@@ -22,7 +22,14 @@ export default function Dashboard() {
     queryFn: () => apiRequest("GET", "/api/requirements").then((r) => r.json()),
   });
 
+  const { data: agentRuns = [] } = useQuery<AgentRun[]>({
+    queryKey: ["/api/agent-runs"],
+    queryFn: () => apiRequest("GET", "/api/agent-runs").then((r) => r.json()),
+    refetchInterval: 5000,
+  });
+
   const recentReqs = (reqs || []).slice(-5).reverse();
+  const activeRun = agentRuns.find((r) => r.status === "running");
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -32,7 +39,7 @@ export default function Dashboard() {
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
             <p className="text-sm text-muted-foreground">
-              AI-powered Salesforce deployment overview
+              Autonomous Salesforce deployment overview
             </p>
           </div>
         </div>
@@ -43,6 +50,36 @@ export default function Dashboard() {
           </Button>
         </Link>
       </div>
+
+      {/* Active Agent Banner */}
+      {activeRun && (
+        <Link href="/agent">
+          <Card className="border-primary/30 bg-gradient-to-r from-primary/[0.05] to-transparent cursor-pointer hover:border-primary/50 transition-colors">
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                    <Bot className="h-5 w-5 text-primary animate-pulse" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold flex items-center gap-2">
+                      Agent Running
+                      <span className="inline-flex h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Requirement #{activeRun.requirementId} · Phase: {activeRun.phase} · Retry {activeRun.retryCount}/{activeRun.maxRetries}
+                    </p>
+                  </div>
+                </div>
+                <Button variant="outline" size="sm" className="gap-1.5">
+                  <Activity className="h-3.5 w-3.5" />
+                  View Console
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
+      )}
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -61,6 +98,29 @@ export default function Dashboard() {
               </div>
               <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
                 <FileText className="h-5 w-5 text-primary" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Agent Runs</p>
+                {isLoading ? (
+                  <Skeleton className="h-8 w-16 mt-1" />
+                ) : (
+                  <p className="text-2xl font-bold" data-testid="text-agent-runs">
+                    {stats?.successfulAgentRuns || 0}
+                    <span className="text-sm font-normal text-muted-foreground">
+                      /{stats?.totalAgentRuns || 0}
+                    </span>
+                  </p>
+                )}
+              </div>
+              <div className="h-10 w-10 rounded-lg bg-purple-500/10 flex items-center justify-center">
+                <Bot className="h-5 w-5 text-purple-500" />
               </div>
             </div>
           </CardContent>
@@ -93,37 +153,14 @@ export default function Dashboard() {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">Deployments</p>
-                {isLoading ? (
-                  <Skeleton className="h-8 w-16 mt-1" />
-                ) : (
-                  <p className="text-2xl font-bold" data-testid="text-total-deployments">
-                    {stats?.totalDeployments || 0}
-                  </p>
-                )}
-              </div>
-              <div className="h-10 w-10 rounded-lg bg-green-500/10 flex items-center justify-center">
-                <Rocket className="h-5 w-5 text-green-500" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between">
-              <div>
                 <p className="text-sm text-muted-foreground">Success Rate</p>
                 {isLoading ? (
                   <Skeleton className="h-8 w-16 mt-1" />
                 ) : (
                   <p className="text-2xl font-bold" data-testid="text-success-rate">
                     {stats?.totalDeployments
-                      ? Math.round(
-                          (stats.successfulDeployments / stats.totalDeployments) * 100
-                        )
-                      : 0}
-                    %
+                      ? Math.round((stats.successfulDeployments / stats.totalDeployments) * 100)
+                      : 0}%
                   </p>
                 )}
               </div>
@@ -153,10 +190,7 @@ export default function Dashboard() {
                 { label: "Deployed", count: stats.byStatus?.deployed || 0, color: "bg-green-500" },
                 { label: "Failed", count: stats.byStatus?.failed || 0, color: "bg-red-500" },
               ].map((s) => (
-                <div
-                  key={s.label}
-                  className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm"
-                >
+                <div key={s.label} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm">
                   <span className={`h-2 w-2 rounded-full ${s.color}`} />
                   <span className="text-muted-foreground">{s.label}</span>
                   <span className="font-semibold">{s.count}</span>
@@ -167,44 +201,20 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {/* Workflow Overview */}
+      {/* How It Works — Agent-first */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">How It Works</CardTitle>
+          <CardTitle className="text-base">How the Agent Works</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
             {[
-              {
-                step: 1,
-                title: "Submit Requirement",
-                desc: "Describe what you need in plain English",
-                icon: FileText,
-              },
-              {
-                step: 2,
-                title: "AI Analysis",
-                desc: "AI breaks it into Salesforce components",
-                icon: Zap,
-              },
-              {
-                step: 3,
-                title: "Generate Metadata",
-                desc: "AI generates deployable XML/Apex/LWC",
-                icon: Clock,
-              },
-              {
-                step: 4,
-                title: "Review & Approve",
-                desc: "Review each component before deployment",
-                icon: CheckCircle,
-              },
-              {
-                step: 5,
-                title: "Deploy",
-                desc: "Push to your Salesforce sandbox",
-                icon: Rocket,
-              },
+              { step: 1, title: "Describe", desc: "Plain English requirement", icon: FileText },
+              { step: 2, title: "Analyze", desc: "AI architects the solution", icon: Zap },
+              { step: 3, title: "Generate", desc: "Metadata XML, Apex, LWC", icon: Bot },
+              { step: 4, title: "Deploy", desc: "Push to sandbox via API", icon: Rocket },
+              { step: 5, title: "Test", desc: "Run Apex tests automatically", icon: CheckCircle },
+              { step: 6, title: "Fix & Retry", desc: "Auto-fix errors and redeploy", icon: AlertTriangle },
             ].map((item, i) => (
               <div key={item.step} className="flex flex-col items-center text-center relative">
                 <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center mb-2">
@@ -212,7 +222,7 @@ export default function Dashboard() {
                 </div>
                 <p className="text-sm font-medium">{item.title}</p>
                 <p className="text-xs text-muted-foreground mt-0.5">{item.desc}</p>
-                {i < 4 && (
+                {i < 5 && (
                   <ArrowRight className="hidden md:block h-4 w-4 text-muted-foreground/40 absolute -right-2 top-3" />
                 )}
               </div>
@@ -289,11 +299,9 @@ function StatusBadge({ status }: { status: string }) {
   };
 
   return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
-        variants[status] || variants.draft
-      }`}
-    >
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
+      variants[status] || variants.draft
+    }`}>
       {status}
     </span>
   );

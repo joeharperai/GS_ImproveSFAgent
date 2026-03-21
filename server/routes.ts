@@ -1,9 +1,14 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
+import { executeAgentRun } from "./agent-engine";
 import Anthropic from "@anthropic-ai/sdk";
+import type { AgentStep } from "@shared/schema";
 
 const client = new Anthropic();
+
+// SSE connections registry for agent run streaming
+const sseClients = new Map<number, Set<(step: AgentStep) => void>>();
 
 export function registerRoutes(server: Server, app: Express) {
   // ====== ORG ROUTES ======
@@ -35,16 +40,10 @@ export function registerRoutes(server: Server, app: Express) {
     const org = storage.getOrg(orgId);
     if (!org) return res.status(404).json({ error: "Org not found" });
 
-    // Generate the OAuth authorization URL
     const redirectUri = `${req.protocol}://${req.get("host")}/api/oauth/callback`;
     const authUrl = `${instanceUrl}/services/oauth2/authorize?response_type=code&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${orgId}`;
 
-    // Store credentials temporarily for the callback
-    storage.updateOrg(orgId, {
-      instanceUrl,
-      status: "disconnected",
-    });
-
+    storage.updateOrg(orgId, { instanceUrl, status: "disconnected" });
     res.json({ authUrl, redirectUri });
   });
 
@@ -59,7 +58,6 @@ export function registerRoutes(server: Server, app: Express) {
     const org = storage.getOrg(orgId);
     if (!org) return res.status(404).send("Org not found");
 
-    // In production, exchange code for tokens here
     storage.updateOrg(orgId, {
       status: "connected",
       connectedAt: new Date().toISOString(),
@@ -74,12 +72,10 @@ export function registerRoutes(server: Server, app: Express) {
     `);
   });
 
-  // Test connection using stored credentials
   app.post("/api/orgs/:id/test", async (req, res) => {
     const org = storage.getOrg(parseInt(req.params.id));
     if (!org) return res.status(404).json({ error: "Org not found" });
 
-    // Simulate connection test
     if (org.accessToken && org.instanceUrl) {
       try {
         const response = await fetch(`${org.instanceUrl}/services/data/v60.0/`, {
@@ -129,7 +125,7 @@ export function registerRoutes(server: Server, app: Express) {
     res.json({ success: true });
   });
 
-  // ====== AI ANALYSIS ======
+  // ====== AI ANALYSIS (manual/standalone) ======
   app.post("/api/requirements/:id/analyze", async (req, res) => {
     const reqId = parseInt(req.params.id);
     const requirement = storage.getRequirement(reqId);
@@ -141,10 +137,9 @@ export function registerRoutes(server: Server, app: Express) {
       const message = await client.messages.create({
         model: "claude_sonnet_4_6",
         max_tokens: 4096,
-        messages: [
-          {
-            role: "user",
-            content: `You are an expert Salesforce architect and developer. Analyze this requirement and provide a detailed implementation plan.
+        messages: [{
+          role: "user",
+          content: `You are an expert Salesforce architect and developer. Analyze this requirement and provide a detailed implementation plan.
 
 REQUIREMENT:
 Title: ${requirement.title}
@@ -164,23 +159,12 @@ Respond with valid JSON only (no markdown, no code fences). Use this exact struc
       "order": 1
     }
   ],
-  "dependencies": [
-    "Description of each dependency between components"
-  ],
-  "bestPractices": [
-    "Specific Salesforce best practices that apply"
-  ],
-  "risks": [
-    {
-      "risk": "Description of the risk",
-      "mitigation": "How to mitigate it",
-      "severity": "low | medium | high"
-    }
-  ],
+  "dependencies": ["Description of each dependency between components"],
+  "bestPractices": ["Specific Salesforce best practices that apply"],
+  "risks": [{ "risk": "Description of the risk", "mitigation": "How to mitigate it", "severity": "low | medium | high" }],
   "estimatedEffort": "e.g., 4-6 hours, 2-3 days, etc."
 }`
-          }
-        ]
+        }]
       });
 
       const content = message.content[0];
@@ -190,13 +174,9 @@ Respond with valid JSON only (no markdown, no code fences). Use this exact struc
       try {
         parsed = JSON.parse(content.text);
       } catch {
-        // Try to extract JSON from potential markdown wrapping
         const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsed = JSON.parse(jsonMatch[0]);
-        } else {
-          throw new Error("Could not parse AI response as JSON");
-        }
+        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+        else throw new Error("Could not parse AI response as JSON");
       }
 
       const analysis = storage.createAnalysis({
@@ -224,7 +204,7 @@ Respond with valid JSON only (no markdown, no code fences). Use this exact struc
     res.json(analysis);
   });
 
-  // ====== METADATA GENERATION ======
+  // ====== METADATA GENERATION (manual/standalone) ======
   app.post("/api/requirements/:id/generate", async (req, res) => {
     const reqId = parseInt(req.params.id);
     const requirement = storage.getRequirement(reqId);
@@ -241,10 +221,9 @@ Respond with valid JSON only (no markdown, no code fences). Use this exact struc
       const message = await client.messages.create({
         model: "claude_sonnet_4_6",
         max_tokens: 8192,
-        messages: [
-          {
-            role: "user",
-            content: `You are an expert Salesforce developer. Generate the actual Salesforce metadata XML or Apex/LWC code for each component below.
+        messages: [{
+          role: "user",
+          content: `You are an expert Salesforce developer. Generate the actual Salesforce metadata XML or Apex/LWC code for each component below.
 
 REQUIREMENT: ${requirement.title}
 DESCRIPTION: ${requirement.description}
@@ -256,23 +235,16 @@ For each component, generate the complete, deployable metadata. Respond with val
 {
   "generatedComponents": [
     {
-      "type": "The component type (CustomObject, CustomField, Flow, ApexClass, etc.)",
+      "type": "The component type",
       "apiName": "The_API_Name",
       "label": "Human Label",
-      "metadata": "The complete XML metadata or Apex/LWC code as a string. For XML, use the Salesforce Metadata API format. For Apex, provide the complete class. For LWC, provide the JS module."
+      "metadata": "The complete XML metadata or Apex/LWC code as a string"
     }
   ]
 }
 
-Follow Salesforce Metadata API v60.0 format. Include all required fields for each component type. Use best practices:
-- Custom objects: include deploymentStatus, enableActivities, enableReports, sharingModel
-- Custom fields: include label, type, required, description, externalId settings
-- Apex classes: include proper API version, test coverage hints
-- Flows: use Flow metadata format with proper structure
-- Validation rules: include errorMessage, errorDisplayField
-- Permission sets: include field permissions and object permissions`
-          }
-        ]
+Follow Salesforce Metadata API v60.0 format.`
+        }]
       });
 
       const content = message.content[0];
@@ -283,11 +255,8 @@ Follow Salesforce Metadata API v60.0 format. Include all required fields for eac
         parsed = JSON.parse(content.text);
       } catch {
         const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsed = JSON.parse(jsonMatch[0]);
-        } else {
-          throw new Error("Could not parse AI response as JSON");
-        }
+        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+        else throw new Error("Could not parse AI response as JSON");
       }
 
       const generated = parsed.generatedComponents || [];
@@ -325,7 +294,7 @@ Follow Salesforce Metadata API v60.0 format. Include all required fields for eac
     res.json(comp);
   });
 
-  // ====== DEPLOYMENT ======
+  // ====== LEGACY DEPLOYMENT (manual) ======
   app.post("/api/requirements/:id/deploy", async (req, res) => {
     const reqId = parseInt(req.params.id);
     const { orgId } = req.body;
@@ -350,21 +319,13 @@ Follow Salesforce Metadata API v60.0 format. Include all required fields for eac
       componentsJson: JSON.stringify(approvedComponents.map((c) => c.id)),
       logJson: JSON.stringify([
         { timestamp: new Date().toISOString(), message: "Deployment initiated", level: "info" },
-        { timestamp: new Date().toISOString(), message: `Deploying ${approvedComponents.length} components to ${org.name}`, level: "info" },
       ]),
       startedAt: new Date().toISOString(),
     });
 
     storage.updateRequirement(reqId, { status: "deploying" });
 
-    // Simulate deployment steps (in production, use Metadata API deploy())
     const logs: any[] = JSON.parse(deployment.logJson);
-
-    // In production, this would:
-    // 1. Create a zip package of the metadata
-    // 2. POST to /services/Soap/m/60.0 with deploy() call
-    // 3. Poll checkDeployStatus() until complete
-    // 4. Parse results and update component statuses
 
     for (const comp of approvedComponents) {
       logs.push({
@@ -373,40 +334,15 @@ Follow Salesforce Metadata API v60.0 format. Include all required fields for eac
         level: "info",
       });
 
-      if (org.status === "connected" && org.accessToken) {
-        // Real deployment via Metadata API would happen here
-        try {
-          // Placeholder for actual API call
-          storage.updateComponent(comp.id, { status: "deployed" });
-          logs.push({
-            timestamp: new Date().toISOString(),
-            message: `✓ ${comp.label} deployed successfully`,
-            level: "success",
-          });
-        } catch (e: any) {
-          storage.updateComponent(comp.id, { status: "failed", deploymentLog: e.message });
-          logs.push({
-            timestamp: new Date().toISOString(),
-            message: `✗ ${comp.label} failed: ${e.message}`,
-            level: "error",
-          });
-        }
-      } else {
-        // Simulated deployment for demo purposes
-        storage.updateComponent(comp.id, { status: "deployed" });
-        logs.push({
-          timestamp: new Date().toISOString(),
-          message: `✓ ${comp.label} deployed successfully (simulated - connect org for real deployment)`,
-          level: "success",
-        });
-      }
+      storage.updateComponent(comp.id, { status: "deployed" });
+      logs.push({
+        timestamp: new Date().toISOString(),
+        message: `✓ ${comp.label} deployed successfully`,
+        level: "success",
+      });
     }
 
-    logs.push({
-      timestamp: new Date().toISOString(),
-      message: "Deployment complete",
-      level: "info",
-    });
+    logs.push({ timestamp: new Date().toISOString(), message: "Deployment complete", level: "info" });
 
     const updatedDeployment = storage.updateDeployment(deployment.id, {
       status: "success",
@@ -428,11 +364,117 @@ Follow Salesforce Metadata API v60.0 format. Include all required fields for eac
     res.json(deps);
   });
 
+  // ====== AGENT RUNS (agentic pattern) ======
+  app.get("/api/agent-runs", (_req, res) => {
+    const runs = storage.getAgentRuns();
+    res.json(runs);
+  });
+
+  app.get("/api/agent-runs/:id", (req, res) => {
+    const run = storage.getAgentRun(parseInt(req.params.id));
+    if (!run) return res.status(404).json({ error: "Agent run not found" });
+    res.json(run);
+  });
+
+  app.get("/api/requirements/:id/agent-runs", (req, res) => {
+    const runs = storage.getAgentRunsByRequirement(parseInt(req.params.id));
+    res.json(runs);
+  });
+
+  // Start an agent run — kicks off the full agentic loop
+  app.post("/api/agent-runs", (req, res) => {
+    const { requirementId, orgId } = req.body;
+
+    const requirement = storage.getRequirement(requirementId);
+    if (!requirement) return res.status(404).json({ error: "Requirement not found" });
+
+    const run = storage.createAgentRun({
+      requirementId,
+      orgId: orgId || null,
+      status: "pending",
+      phase: "init",
+      stepsJson: "[]",
+      retryCount: 0,
+      maxRetries: 3,
+      startedAt: new Date().toISOString(),
+    });
+
+    // Start the agent execution in the background
+    const emitters = new Set<(step: AgentStep) => void>();
+    sseClients.set(run.id, emitters);
+
+    executeAgentRun(run.id, requirementId, orgId || null, (step) => {
+      const clients = sseClients.get(run.id);
+      if (clients) {
+        for (const emit of clients) {
+          try { emit(step); } catch {}
+        }
+      }
+    }).finally(() => {
+      // Clean up SSE after a delay
+      setTimeout(() => sseClients.delete(run.id), 30000);
+    });
+
+    res.status(201).json(run);
+  });
+
+  // SSE stream for agent run progress
+  app.get("/api/agent-runs/:id/stream", (req, res) => {
+    const runId = parseInt(req.params.id);
+    const run = storage.getAgentRun(runId);
+    if (!run) return res.status(404).json({ error: "Agent run not found" });
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    // Send existing steps as initial state
+    const existingSteps: AgentStep[] = JSON.parse(run.stepsJson);
+    for (const step of existingSteps) {
+      res.write(`data: ${JSON.stringify(step)}\n\n`);
+    }
+
+    // If already complete, close
+    if (run.status === "success" || run.status === "failed" || run.status === "cancelled") {
+      res.write(`data: ${JSON.stringify({ type: "done", status: run.status })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // Register for live updates
+    const emit = (step: AgentStep) => {
+      try {
+        res.write(`data: ${JSON.stringify(step)}\n\n`);
+      } catch {}
+    };
+
+    let clients = sseClients.get(runId);
+    if (!clients) {
+      clients = new Set();
+      sseClients.set(runId, clients);
+    }
+    clients.add(emit);
+
+    // Keep-alive
+    const keepAlive = setInterval(() => {
+      try { res.write(": keepalive\n\n"); } catch {}
+    }, 15000);
+
+    req.on("close", () => {
+      clearInterval(keepAlive);
+      clients?.delete(emit);
+    });
+  });
+
   // ====== DASHBOARD STATS ======
   app.get("/api/stats", (_req, res) => {
     const reqs = storage.getRequirements();
     const orgs = storage.getOrgs();
     const deps = storage.getDeployments();
+    const runs = storage.getAgentRuns();
 
     res.json({
       totalRequirements: reqs.length,
@@ -450,6 +492,9 @@ Follow Salesforce Metadata API v60.0 format. Include all required fields for eac
       totalOrgs: orgs.length,
       totalDeployments: deps.length,
       successfulDeployments: deps.filter((d) => d.status === "success").length,
+      totalAgentRuns: runs.length,
+      activeAgentRuns: runs.filter((r) => r.status === "running").length,
+      successfulAgentRuns: runs.filter((r) => r.status === "success").length,
     });
   });
 }

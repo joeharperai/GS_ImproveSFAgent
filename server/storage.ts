@@ -1,13 +1,14 @@
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import {
-  sfOrgs, requirements, analyses, metadataComponents, deployments,
+  sfOrgs, requirements, analyses, metadataComponents, deployments, agentRuns,
   type InsertSfOrg, type SfOrg,
   type InsertRequirement, type Requirement,
   type InsertAnalysis, type Analysis,
   type InsertMetadataComponent, type MetadataComponent,
   type InsertDeployment, type Deployment,
+  type InsertAgentRun, type AgentRun,
 } from "@shared/schema";
 
 const sqlite = new Database("sf_deploy.db");
@@ -68,6 +69,19 @@ sqlite.exec(`
     started_at TEXT NOT NULL,
     completed_at TEXT
   );
+  CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    requirement_id INTEGER NOT NULL,
+    org_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    phase TEXT NOT NULL DEFAULT 'init',
+    steps_json TEXT NOT NULL DEFAULT '[]',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    error_summary TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+  );
 `);
 
 export interface IStorage {
@@ -100,6 +114,13 @@ export interface IStorage {
   getDeploymentsByRequirement(requirementId: number): Deployment[];
   createDeployment(deployment: InsertDeployment): Deployment;
   updateDeployment(id: number, data: Partial<InsertDeployment>): Deployment | undefined;
+
+  // Agent Runs
+  getAgentRuns(): AgentRun[];
+  getAgentRun(id: number): AgentRun | undefined;
+  getAgentRunsByRequirement(requirementId: number): AgentRun[];
+  createAgentRun(run: InsertAgentRun): AgentRun;
+  updateAgentRun(id: number, data: Partial<InsertAgentRun>): AgentRun | undefined;
 }
 
 export class SqliteStorage implements IStorage {
@@ -166,6 +187,23 @@ export class SqliteStorage implements IStorage {
   }
   updateDeployment(id: number, data: Partial<InsertDeployment>): Deployment | undefined {
     return db.update(deployments).set(data).where(eq(deployments.id, id)).returning().get();
+  }
+
+  // Agent Runs
+  getAgentRuns(): AgentRun[] {
+    return db.select().from(agentRuns).orderBy(desc(agentRuns.id)).all();
+  }
+  getAgentRun(id: number): AgentRun | undefined {
+    return db.select().from(agentRuns).where(eq(agentRuns.id, id)).get();
+  }
+  getAgentRunsByRequirement(requirementId: number): AgentRun[] {
+    return db.select().from(agentRuns).where(eq(agentRuns.requirementId, requirementId)).orderBy(desc(agentRuns.id)).all();
+  }
+  createAgentRun(run: InsertAgentRun): AgentRun {
+    return db.insert(agentRuns).values(run).returning().get();
+  }
+  updateAgentRun(id: number, data: Partial<InsertAgentRun>): AgentRun | undefined {
+    return db.update(agentRuns).set(data).where(eq(agentRuns.id, id)).returning().get();
   }
 }
 

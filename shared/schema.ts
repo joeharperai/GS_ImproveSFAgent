@@ -23,9 +23,9 @@ export const requirements = sqliteTable("requirements", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   title: text("title").notNull(),
   description: text("description").notNull(),
-  category: text("category").notNull().default("declarative"), // declarative | apex | lwc | integration | data_migration | flow
-  priority: text("priority").notNull().default("medium"), // low | medium | high | critical
-  status: text("status").notNull().default("draft"), // draft | analyzing | analyzed | generating | ready | deploying | deployed | failed
+  category: text("category").notNull().default("declarative"),
+  priority: text("priority").notNull().default("medium"),
+  status: text("status").notNull().default("draft"),
   orgId: integer("org_id"),
   createdAt: text("created_at").notNull(),
 });
@@ -39,10 +39,10 @@ export const analyses = sqliteTable("analyses", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   requirementId: integer("requirement_id").notNull(),
   summary: text("summary").notNull(),
-  componentsJson: text("components_json").notNull(), // JSON array of components to create
-  dependenciesJson: text("dependencies_json").notNull(), // JSON array of dependencies
-  bestPracticesJson: text("best_practices_json").notNull(), // JSON array of best practice notes
-  risksJson: text("risks_json").notNull(), // JSON array of risks
+  componentsJson: text("components_json").notNull(),
+  dependenciesJson: text("dependencies_json").notNull(),
+  bestPracticesJson: text("best_practices_json").notNull(),
+  risksJson: text("risks_json").notNull(),
   estimatedEffort: text("estimated_effort"),
   createdAt: text("created_at").notNull(),
 });
@@ -55,11 +55,11 @@ export type Analysis = typeof analyses.$inferSelect;
 export const metadataComponents = sqliteTable("metadata_components", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   requirementId: integer("requirement_id").notNull(),
-  componentType: text("component_type").notNull(), // CustomObject | CustomField | Flow | ApexClass | ApexTrigger | LWC | ValidationRule | PermissionSet | Layout
+  componentType: text("component_type").notNull(),
   apiName: text("api_name").notNull(),
   label: text("label").notNull(),
-  metadataXml: text("metadata_xml").notNull(), // The generated metadata XML or code
-  status: text("status").notNull().default("pending"), // pending | approved | deployed | failed
+  metadataXml: text("metadata_xml").notNull(),
+  status: text("status").notNull().default("pending"),
   deploymentLog: text("deployment_log"),
   createdAt: text("created_at").notNull(),
 });
@@ -73,9 +73,9 @@ export const deployments = sqliteTable("deployments", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   requirementId: integer("requirement_id").notNull(),
   orgId: integer("org_id").notNull(),
-  status: text("status").notNull().default("pending"), // pending | in_progress | success | partial | failed | rolled_back
-  componentsJson: text("components_json").notNull(), // JSON array of component IDs deployed
-  logJson: text("log_json").notNull(), // JSON array of deployment log entries
+  status: text("status").notNull().default("pending"),
+  componentsJson: text("components_json").notNull(),
+  logJson: text("log_json").notNull(),
   startedAt: text("started_at").notNull(),
   completedAt: text("completed_at"),
 });
@@ -83,3 +83,34 @@ export const deployments = sqliteTable("deployments", {
 export const insertDeploymentSchema = createInsertSchema(deployments).omit({ id: true });
 export type InsertDeployment = z.infer<typeof insertDeploymentSchema>;
 export type Deployment = typeof deployments.$inferSelect;
+
+// Agent execution runs — tracks the full agentic loop
+export const agentRuns = sqliteTable("agent_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  requirementId: integer("requirement_id").notNull(),
+  orgId: integer("org_id"),
+  status: text("status").notNull().default("pending"), // pending | running | success | failed | cancelled
+  phase: text("phase").notNull().default("init"), // init | analyzing | generating | deploying | testing | fixing | complete
+  stepsJson: text("steps_json").notNull().default("[]"), // JSON array of step logs
+  retryCount: integer("retry_count").notNull().default(0),
+  maxRetries: integer("max_retries").notNull().default(3),
+  errorSummary: text("error_summary"),
+  startedAt: text("started_at").notNull(),
+  completedAt: text("completed_at"),
+});
+
+export const insertAgentRunSchema = createInsertSchema(agentRuns).omit({ id: true });
+export type InsertAgentRun = z.infer<typeof insertAgentRunSchema>;
+export type AgentRun = typeof agentRuns.$inferSelect;
+
+// Agent step log entry type (not a table, stored as JSON in agentRuns.stepsJson)
+export interface AgentStep {
+  id: string;
+  timestamp: string;
+  phase: string;
+  action: string;
+  detail: string;
+  status: "info" | "success" | "warning" | "error" | "thinking";
+  durationMs?: number;
+  metadata?: Record<string, any>;
+}
