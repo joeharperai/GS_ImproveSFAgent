@@ -32,7 +32,16 @@ const sseClients = new Map<number, Set<(step: AgentStep) => void>>();
 export function registerRoutes(server: Server, app: Express) {
   // ====== HEALTH CHECK (for Railway / cloud platforms) ======
   app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", app: "GS_ImproveSFAgent", version: "1.0.0", timestamp: new Date().toISOString() });
+    const hasKey = !!process.env.ANTHROPIC_API_KEY;
+    const keyPrefix = hasKey ? process.env.ANTHROPIC_API_KEY!.substring(0, 7) + '...' : 'NOT SET';
+    res.json({
+      status: "ok",
+      app: "GS_ImproveSFAgent",
+      version: "1.0.0",
+      timestamp: new Date().toISOString(),
+      anthropicKeyPresent: hasKey,
+      anthropicKeyPrefix: keyPrefix,
+    });
   });
 
   // ====== AUTH ROUTES (public — no auth required) ======
@@ -511,7 +520,7 @@ export function registerRoutes(server: Server, app: Express) {
       if (item.metadataJson) prompt += `\nMetadata: ${item.metadataJson.substring(0, 1000)}`;
 
       const message = await getClient().messages.create({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-5-20250929",
         max_tokens: 512,
         messages: [{ role: "user", content: prompt + "\n\nRespond with just the description text, no JSON wrapper." }],
       });
@@ -810,7 +819,7 @@ export function registerRoutes(server: Server, app: Express) {
 
     try {
       const message = await getClient().messages.create({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-5-20250929",
         max_tokens: 4096,
         messages: [{
           role: "user",
@@ -906,7 +915,7 @@ Respond with valid JSON only (no markdown, no code fences). Use this exact struc
       const components = JSON.parse(analysis.componentsJson);
 
       const message = await getClient().messages.create({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-5-20250929",
         max_tokens: 8192,
         messages: [{
           role: "user",

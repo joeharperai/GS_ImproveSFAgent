@@ -9,7 +9,12 @@ import { randomUUID } from "crypto";
 let _client: Anthropic | null = null;
 function getClient(): Anthropic {
   if (!_client) {
-    _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const key = process.env.ANTHROPIC_API_KEY;
+    console.log(`[Anthropic] Initializing client. API key present: ${!!key}, key prefix: ${key ? key.substring(0, 10) + '...' : 'MISSING'}`);
+    if (!key) {
+      throw new Error("ANTHROPIC_API_KEY environment variable is not set. Add it in Railway Variables.");
+    }
+    _client = new Anthropic({ apiKey: key });
   }
   return _client;
 }
@@ -239,7 +244,7 @@ export async function runArchitectReview(
   }
 
   const message = await getClient().messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 6144,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
@@ -391,7 +396,7 @@ async function runAnalysis(
     : "";
 
   const message = await getClient().messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 4096,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
@@ -491,7 +496,7 @@ async function runGeneration(
   const components = analysisResult.components || [];
 
   const message = await getClient().messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 8192,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
@@ -937,7 +942,7 @@ async function runFixAndRetry(
   storage.updateAgentRun(runId, { retryCount: run.retryCount + 1 });
 
   const message = await getClient().messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-5-20250929",
     max_tokens: 8192,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{

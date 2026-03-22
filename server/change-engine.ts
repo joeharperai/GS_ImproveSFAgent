@@ -111,7 +111,7 @@ RULES:
 Generate the COMPLETE updated code with the requested change applied. Return ONLY the updated code, no explanations or markdown fences.`;
 
     const message = await getClient().messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-5-20250929",
       max_tokens: 8192,
       messages: [{ role: "user", content: prompt }],
     });
