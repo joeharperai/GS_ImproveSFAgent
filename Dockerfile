@@ -46,7 +46,6 @@ RUN mkdir -p /data && chown -R node:node /data
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PORT=5000
 ENV DATABASE_PATH=/data/gs_improvesfagent.db
 
 # Use non-root user for security
