@@ -42,21 +42,11 @@ RUN apk del python3 make g++ gcc
 COPY --from=builder /app/dist ./dist
 
 # Create data directory for SQLite volume mount
-RUN mkdir -p /data && chown -R node:node /data
+RUN mkdir -p /data
 
 # Set environment variables
 ENV NODE_ENV=production
 ENV DATABASE_PATH=/data/gs_improvesfagent.db
-
-# Use non-root user for security
-USER node
-
-# Expose port
-EXPOSE 5000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:5000/api/health || exit 1
 
 # Start the production server
 CMD ["node", "dist/index.cjs"]
