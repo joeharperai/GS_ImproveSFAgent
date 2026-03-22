@@ -29,10 +29,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
 
-  // On mount, check if setup is required (no users yet)
+  // On mount, try to restore session from localStorage, then check setup
   useEffect(() => {
-    checkSetup();
+    restoreSession();
   }, []);
+
+  async function restoreSession() {
+    try {
+      // Try to restore token from localStorage
+      const savedToken = localStorage.getItem("gs_auth_token");
+      const savedUser = localStorage.getItem("gs_auth_user");
+      if (savedToken && savedUser) {
+        // Verify the token is still valid
+        const res = await fetch(`${API_BASE}/api/auth/me`, {
+          headers: { Authorization: `Bearer ${savedToken}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setUser(data.user);
+          setToken(savedToken);
+          setAuthToken(savedToken);
+          setSetupRequired(false);
+          setIsLoading(false);
+          return;
+        } else {
+          // Token expired or invalid — clear it
+          localStorage.removeItem("gs_auth_token");
+          localStorage.removeItem("gs_auth_user");
+        }
+      }
+    } catch {
+      // localStorage might not be available — fall through
+    }
+    await checkSetup();
+  }
 
   async function checkSetup() {
     try {
@@ -65,6 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(data.token);
     setAuthToken(data.token);
     setSetupRequired(false);
+    try { localStorage.setItem("gs_auth_token", data.token); localStorage.setItem("gs_auth_user", JSON.stringify(data.user)); } catch {}
   }, []);
 
   const signup = useCallback(async (email: string, password: string, displayName: string) => {
@@ -84,6 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(data.token);
     setAuthToken(data.token);
     setSetupRequired(false);
+    try { localStorage.setItem("gs_auth_token", data.token); localStorage.setItem("gs_auth_user", JSON.stringify(data.user)); } catch {}
   }, []);
 
   const logout = useCallback(async () => {
@@ -100,6 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setToken(null);
     setAuthToken(null);
+    try { localStorage.removeItem("gs_auth_token"); localStorage.removeItem("gs_auth_user"); } catch {}
   }, [token]);
 
   return (
