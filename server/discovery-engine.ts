@@ -4,7 +4,11 @@ import { fireWebhook } from "./webhook-service";
 import type { SfOrg } from "@shared/schema";
 import { trackApiCall, canMakeApiCall, isApproachingLimit, parseSforceLimitHeader, setLimitFromEdition } from "./rate-limiter";
 
-const client = new Anthropic();
+let _client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!_client) { _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }); }
+  return _client;
+}
 
 interface ScanProgress {
   phase: string;
@@ -388,7 +392,7 @@ export async function executeOrgDiscovery(
           return context;
         }).join("\n\n");
 
-        const message = await client.messages.create({
+        const message = await getClient().messages.create({
           model: "claude-sonnet-4-20250514",
           max_tokens: 2048,
           messages: [{

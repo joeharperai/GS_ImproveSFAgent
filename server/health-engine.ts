@@ -3,7 +3,11 @@ import { storage } from "./storage";
 import { fireWebhook } from "./webhook-service";
 import type { OrgInventoryItem } from "@shared/schema";
 
-const client = new Anthropic();
+let _client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!_client) { _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }); }
+  return _client;
+}
 
 interface HealthRuleFinding {
   componentApiName?: string;
@@ -803,7 +807,7 @@ export async function executeHealthAssessment(
           `${idx + 1}. [${c.category}] ${c.apiName}\n${c.sourceCode!.substring(0, 1500)}`
         ).join("\n\n---\n\n");
 
-        const message = await client.messages.create({
+        const message = await getClient().messages.create({
           model: "claude-sonnet-4-20250514",
           max_tokens: 2048,
           messages: [{

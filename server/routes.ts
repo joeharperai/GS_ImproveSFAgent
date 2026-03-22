@@ -810,7 +810,7 @@ export function registerRoutes(server: Server, app: Express) {
 
     try {
       const message = await getClient().messages.create({
-        model: "claude_sonnet_4_6",
+        model: "claude-sonnet-4-20250514",
         max_tokens: 4096,
         messages: [{
           role: "user",
@@ -906,7 +906,7 @@ Respond with valid JSON only (no markdown, no code fences). Use this exact struc
       const components = JSON.parse(analysis.componentsJson);
 
       const message = await getClient().messages.create({
-        model: "claude_sonnet_4_6",
+        model: "claude-sonnet-4-20250514",
         max_tokens: 8192,
         messages: [{
           role: "user",

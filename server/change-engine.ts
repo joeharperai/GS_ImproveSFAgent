@@ -3,7 +3,11 @@ import { storage } from "./storage";
 import { undeployFromOrg } from "./metadata-deployer";
 import type { MetadataComponent } from "@shared/schema";
 
-const client = new Anthropic();
+let _client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!_client) { _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }); }
+  return _client;
+}
 
 // Generate a context-aware change proposal
 export async function generateChangeProposal(changeRequestId: number): Promise<void> {
@@ -106,7 +110,7 @@ RULES:
 
 Generate the COMPLETE updated code with the requested change applied. Return ONLY the updated code, no explanations or markdown fences.`;
 
-    const message = await client.messages.create({
+    const message = await getClient().messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 8192,
       messages: [{ role: "user", content: prompt }],

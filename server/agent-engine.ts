@@ -239,7 +239,7 @@ export async function runArchitectReview(
   }
 
   const message = await getClient().messages.create({
-    model: "claude_sonnet_4_6",
+    model: "claude-sonnet-4-20250514",
     max_tokens: 6144,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
@@ -391,7 +391,7 @@ async function runAnalysis(
     : "";
 
   const message = await getClient().messages.create({
-    model: "claude_sonnet_4_6",
+    model: "claude-sonnet-4-20250514",
     max_tokens: 4096,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
@@ -491,7 +491,7 @@ async function runGeneration(
   const components = analysisResult.components || [];
 
   const message = await getClient().messages.create({
-    model: "claude_sonnet_4_6",
+    model: "claude-sonnet-4-20250514",
     max_tokens: 8192,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
@@ -937,7 +937,7 @@ async function runFixAndRetry(
   storage.updateAgentRun(runId, { retryCount: run.retryCount + 1 });
 
   const message = await getClient().messages.create({
-    model: "claude_sonnet_4_6",
+    model: "claude-sonnet-4-20250514",
     max_tokens: 8192,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
