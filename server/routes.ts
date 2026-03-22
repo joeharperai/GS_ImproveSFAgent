@@ -34,6 +34,8 @@ export function registerRoutes(server: Server, app: Express) {
   app.get("/api/health", (_req, res) => {
     const hasKey = !!process.env.ANTHROPIC_API_KEY;
     const keyPrefix = hasKey ? process.env.ANTHROPIC_API_KEY!.substring(0, 7) + '...' : 'NOT SET';
+    // List all env vars that contain 'ANTHROPIC' or 'KEY' to debug
+    const envKeys = Object.keys(process.env).filter(k => k.includes('ANTHROPIC') || k.includes('API_KEY') || k.includes('RAILWAY'));
     res.json({
       status: "ok",
       app: "GS_ImproveSFAgent",
@@ -41,6 +43,8 @@ export function registerRoutes(server: Server, app: Express) {
       timestamp: new Date().toISOString(),
       anthropicKeyPresent: hasKey,
       anthropicKeyPrefix: keyPrefix,
+      envKeysFound: envKeys,
+      totalEnvVars: Object.keys(process.env).length,
     });
   });
 
