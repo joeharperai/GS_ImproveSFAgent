@@ -8,8 +8,11 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Install build tools needed for native addons (better-sqlite3)
+RUN apk add --no-cache python3 make g++ gcc
+
 # Copy package files first for better caching
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 
 # Install all dependencies (including devDependencies for build)
 RUN npm ci
@@ -25,9 +28,15 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
+# Install build tools for native addon rebuild
+RUN apk add --no-cache python3 make g++ gcc
+
 # Install only production dependencies
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
+
+# Remove build tools to keep image smaller
+RUN apk del python3 make g++ gcc
 
 # Copy built output from builder
 COPY --from=builder /app/dist ./dist
