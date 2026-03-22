@@ -17,7 +17,14 @@ import { fireWebhook, sendTestWebhook } from "./webhook-service";
 import Anthropic from "@anthropic-ai/sdk";
 import type { AgentStep } from "@shared/schema";
 
-const client = new Anthropic();
+// Lazy-initialize so ANTHROPIC_API_KEY is read at call time
+let _routeClient: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!_routeClient) {
+    _routeClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+  return _routeClient;
+}
 
 // SSE connections registry for agent run streaming
 const sseClients = new Map<number, Set<(step: AgentStep) => void>>();
@@ -503,7 +510,7 @@ export function registerRoutes(server: Server, app: Express) {
       if (item.sourceCode) prompt += `\nCode:\n${item.sourceCode.substring(0, 3000)}`;
       if (item.metadataJson) prompt += `\nMetadata: ${item.metadataJson.substring(0, 1000)}`;
 
-      const message = await client.messages.create({
+      const message = await getClient().messages.create({
         model: "claude-sonnet-4-20250514",
         max_tokens: 512,
         messages: [{ role: "user", content: prompt + "\n\nRespond with just the description text, no JSON wrapper." }],
@@ -802,7 +809,7 @@ export function registerRoutes(server: Server, app: Express) {
     storage.updateRequirement(reqId, { status: "analyzing" });
 
     try {
-      const message = await client.messages.create({
+      const message = await getClient().messages.create({
         model: "claude_sonnet_4_6",
         max_tokens: 4096,
         messages: [{
@@ -898,7 +905,7 @@ Respond with valid JSON only (no markdown, no code fences). Use this exact struc
     try {
       const components = JSON.parse(analysis.componentsJson);
 
-      const message = await client.messages.create({
+      const message = await getClient().messages.create({
         model: "claude_sonnet_4_6",
         max_tokens: 8192,
         messages: [{

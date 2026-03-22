@@ -5,7 +5,14 @@ import { fireWebhook } from "./webhook-service";
 import type { AgentStep, AgentRun, Requirement, SfOrg } from "@shared/schema";
 import { randomUUID } from "crypto";
 
-const client = new Anthropic();
+// Lazy-initialize the Anthropic client so it reads ANTHROPIC_API_KEY at call time, not at import time
+let _client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!_client) {
+    _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+  return _client;
+}
 
 type SSEEmitter = (step: AgentStep) => void;
 
@@ -231,7 +238,7 @@ export async function runArchitectReview(
     storage.updateAgentRun(runId, { phase: "architect_review" });
   }
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: "claude_sonnet_4_6",
     max_tokens: 6144,
     system: GOVERNANCE_SYSTEM_PROMPT,
@@ -383,7 +390,7 @@ async function runAnalysis(
     ? `\n\nFSC IMPLICATIONS TO CONSIDER:\n${architectReview.fscImplications.map(i => `- ${i}`).join("\n")}`
     : "";
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: "claude_sonnet_4_6",
     max_tokens: 4096,
     system: GOVERNANCE_SYSTEM_PROMPT,
@@ -483,7 +490,7 @@ async function runGeneration(
 
   const components = analysisResult.components || [];
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: "claude_sonnet_4_6",
     max_tokens: 8192,
     system: GOVERNANCE_SYSTEM_PROMPT,
@@ -929,7 +936,7 @@ async function runFixAndRetry(
 
   storage.updateAgentRun(runId, { retryCount: run.retryCount + 1 });
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: "claude_sonnet_4_6",
     max_tokens: 8192,
     system: GOVERNANCE_SYSTEM_PROMPT,
