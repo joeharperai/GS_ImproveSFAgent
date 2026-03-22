@@ -1,6 +1,9 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import { setAuthToken } from "./queryClient";
 
+// Use the same API_BASE as queryClient for URL rewriting in deployed environments
+const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+
 interface AuthUser {
   id: number;
   email: string;
@@ -33,7 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function checkSetup() {
     try {
-      const res = await fetch("/api/auth/setup-required");
+      const res = await fetch(`${API_BASE}/api/auth/setup-required`);
       if (res.ok) {
         const data = await res.json();
         setSetupRequired(data.setupRequired);
@@ -46,7 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const login = useCallback(async (email: string, password: string) => {
-    const res = await fetch("/api/auth/login", {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
@@ -65,7 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signup = useCallback(async (email: string, password: string, displayName: string) => {
-    const res = await fetch("/api/auth/signup", {
+    const res = await fetch(`${API_BASE}/api/auth/signup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, displayName }),
@@ -86,7 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     if (token) {
       try {
-        await fetch("/api/auth/logout", {
+        await fetch(`${API_BASE}/api/auth/logout`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` },
         });
