@@ -497,11 +497,12 @@ async function runGeneration(
 
   const message = await getClient().messages.create({
     model: "claude-sonnet-4-5-20250929",
-    max_tokens: 8192,
+    max_tokens: 16384,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
       role: "user",
       content: `You are an expert Salesforce developer. Generate complete, deployable Salesforce metadata.
+IMPORTANT: Keep each component's metadata concise. Do NOT include excessive comments or documentation inside code. Prioritize completeness of all components over verbosity of any single one.
 You MUST comply with ALL Salesforce Well-Architected Framework rules in your system instructions.
 
 REQUIREMENT: ${requirement.title}
@@ -563,12 +564,45 @@ MANDATORY GOVERNANCE RULES FOR CODE GENERATION:
   try {
     parsed = JSON.parse(content.text);
   } catch {
+    // Try to extract JSON object
     const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-    else throw new Error("Could not parse metadata generation response");
+    if (jsonMatch) {
+      try {
+        parsed = JSON.parse(jsonMatch[0]);
+      } catch {
+        // JSON was truncated — try to recover by closing open strings and arrays
+        let fixedJson = jsonMatch[0];
+        // Close any unclosed strings
+        const openQuotes = (fixedJson.match(/"/g) || []).length;
+        if (openQuotes % 2 !== 0) fixedJson += '"';
+        // Try to close the structure
+        if (!fixedJson.endsWith('}')) {
+          // Find the last complete component object
+          const lastCompleteObj = fixedJson.lastIndexOf('},');
+          if (lastCompleteObj > 0) {
+            fixedJson = fixedJson.substring(0, lastCompleteObj + 1) + ']}';
+          } else {
+            fixedJson += ']}' ;
+          }
+        }
+        try {
+          parsed = JSON.parse(fixedJson);
+        } catch {
+          // Last resort: extract individual component objects
+          const componentMatches = content.text.match(/\{\s*"type"\s*:.*?"metadata"\s*:.*?\}/gs);
+          if (componentMatches && componentMatches.length > 0) {
+            parsed = { generatedComponents: componentMatches.map(m => { try { return JSON.parse(m); } catch { return null; } }).filter(Boolean) };
+          } else {
+            throw new Error("Could not parse metadata generation response — JSON was truncated. Try a simpler requirement with fewer components.");
+          }
+        }
+      }
+    } else {
+      throw new Error("Could not parse metadata generation response");
+    }
   }
 
-  const generated = parsed.generatedComponents || [];
+  const generated = parsed.generatedComponents || parsed.components || [];
   const createdComponents = [];
 
   for (const comp of generated) {
