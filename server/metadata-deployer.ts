@@ -404,12 +404,20 @@ export async function deployToOrg(
     stateDetail: "Uploading deployment package to Salesforce...",
   });
 
-  const deployId = await initiateRestDeploy(org, zipBuffer, options?.checkOnly);
-
-  if (!deployId) {
+  let deployId: string;
+  try {
+    deployId = await initiateRestDeploy(org, zipBuffer, options?.checkOnly) as string;
+  } catch (err: any) {
+    const errorMsg = err.message || "Failed to initiate deployment";
+    onProgress?.({
+      status: "Failed",
+      done: true,
+      success: false,
+      stateDetail: errorMsg,
+    });
     return {
       success: false,
-      errors: [{ componentType: "N/A", apiName: "N/A", problem: "Failed to initiate deployment — no deploy ID returned" }],
+      errors: [{ componentType: "Deploy", apiName: "deployRequest", problem: errorMsg }],
     };
   }
 
@@ -484,14 +492,20 @@ async function initiateRestDeploy(org: SfOrg, zipBuffer: Buffer, checkOnly?: boo
     if (!response.ok) {
       const errText = await response.text();
       console.error(`Deploy initiation failed (${response.status}): ${errText}`);
-      return null;
+      // Surface the actual Salesforce error instead of silently returning null
+      throw new Error(`Salesforce deploy API returned ${response.status}: ${errText.substring(0, 500)}`);
     }
 
     const result = await response.json() as any;
-    return result.id || result.deployResult?.id || null;
+    const deployId = result.id || result.deployResult?.id || null;
+    if (!deployId) {
+      console.error("Deploy response missing ID:", JSON.stringify(result).substring(0, 500));
+      throw new Error("Salesforce accepted the deploy but returned no deploy ID");
+    }
+    return deployId;
   } catch (err: any) {
     console.error("Deploy initiation error:", err.message);
-    return null;
+    throw err; // Re-throw so the caller can report the actual error
   }
 }
 
