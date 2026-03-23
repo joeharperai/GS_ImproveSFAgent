@@ -1,12 +1,16 @@
 import { useMutation } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/hooks/use-toast";
 import {
   Shield, ShieldAlert, ShieldCheck, ShieldX,
   AlertTriangle, AlertOctagon, Info, Loader2,
   MessageSquareWarning, Database, Zap, ChevronDown, ChevronUp,
+  Wand2, CheckCircle,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -32,6 +36,42 @@ interface ArchitectReviewResult {
 export function ArchitectReviewPanel({ requirementId }: { requirementId: number }) {
   const [review, setReview] = useState<ArchitectReviewResult | null>(null);
   const [expanded, setExpanded] = useState(true);
+  const [selectedRecs, setSelectedRecs] = useState<Set<number>>(new Set());
+  const [selectedChallenges, setSelectedChallenges] = useState<Set<number>>(new Set());
+  const [selectedViolations, setSelectedViolations] = useState<Set<number>>(new Set());
+  const [customInstructions, setCustomInstructions] = useState("");
+  const [changesApplied, setChangesApplied] = useState<string[] | null>(null);
+  const { toast } = useToast();
+
+  const implementMutation = useMutation({
+    mutationFn: () => {
+      const body: any = {};
+      if (selectedRecs.size > 0 && review) body.selectedRecommendations = [...selectedRecs].map(i => review.recommendations[i]);
+      if (selectedChallenges.size > 0 && review) body.selectedChallenges = [...selectedChallenges].map(i => review.designChallenges[i]);
+      if (selectedViolations.size > 0 && review) body.selectedViolationFixes = [...selectedViolations].map(i => review.violations[i]);
+      if (customInstructions.trim()) body.customInstructions = customInstructions.trim();
+      return apiRequest("POST", `/api/requirements/${requirementId}/implement-recommendations`, body).then(r => r.json());
+    },
+    onSuccess: (data: any) => {
+      setChangesApplied(data.changesApplied || []);
+      setSelectedRecs(new Set()); setSelectedChallenges(new Set()); setSelectedViolations(new Set()); setCustomInstructions("");
+      queryClient.invalidateQueries({ queryKey: ["/api/requirements"] });
+      toast({ title: "Requirement enhanced", description: `${data.changesApplied?.length || 0} improvements applied. Re-run review to verify.` });
+    },
+  });
+
+  const totalSelected = selectedRecs.size + selectedChallenges.size + selectedViolations.size + (customInstructions.trim() ? 1 : 0);
+
+  function toggleSet(set: Set<number>, setFn: (s: Set<number>) => void, idx: number) {
+    const next = new Set(set); if (next.has(idx)) next.delete(idx); else next.add(idx); setFn(next);
+  }
+
+  function selectAll() {
+    if (!review) return;
+    setSelectedRecs(new Set(review.recommendations.map((_, i) => i)));
+    setSelectedChallenges(new Set(review.designChallenges.map((_, i) => i)));
+    setSelectedViolations(new Set(review.violations.filter(v => v.severity !== "info").map((_, i) => i)));
+  }
 
   const reviewMutation = useMutation({
     mutationFn: () =>
@@ -226,12 +266,13 @@ export function ArchitectReviewPanel({ requirementId }: { requirementId: number 
             <div className="space-y-2">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
                 <MessageSquareWarning className="h-3.5 w-3.5" />
-                Architect Challenges
+                Architect Challenges <span className="text-[10px] font-normal">(select to implement)</span>
               </p>
               <div className="space-y-1.5">
                 {review.designChallenges.map((c, i) => (
-                  <div key={i} className="flex items-start gap-2 p-2.5 rounded-lg bg-muted/40 border border-border/50">
-                    <span className="text-xs font-bold text-muted-foreground mt-0.5 shrink-0">Q{i + 1}</span>
+                  <div key={i} className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors ${selectedChallenges.has(i) ? 'bg-primary/5 border-primary/30' : 'bg-muted/40 border-border/50 hover:bg-muted/60'}`}
+                    onClick={() => toggleSet(selectedChallenges, setSelectedChallenges, i)}>
+                    <Checkbox checked={selectedChallenges.has(i)} className="mt-0.5 shrink-0" />
                     <p className="text-xs leading-relaxed">{c}</p>
                   </div>
                 ))}
@@ -280,16 +321,86 @@ export function ArchitectReviewPanel({ requirementId }: { requirementId: number 
             <div className="space-y-2">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
                 <ShieldCheck className="h-3.5 w-3.5 text-green-500" />
-                Recommendations
+                Recommendations <span className="text-[10px] font-normal">(select to implement)</span>
               </p>
               <div className="space-y-1.5">
                 {review.recommendations.map((r, i) => (
-                  <div key={i} className="flex items-start gap-2 text-xs p-2 rounded bg-green-50 dark:bg-green-950/20 border border-green-200/50 dark:border-green-800/30">
-                    <ShieldCheck className="h-3 w-3 text-green-500 mt-0.5 shrink-0" />
+                  <div key={i} className={`flex items-start gap-2 text-xs p-2 rounded border cursor-pointer transition-colors ${selectedRecs.has(i) ? 'bg-green-100 dark:bg-green-900/40 border-green-400/50' : 'bg-green-50 dark:bg-green-950/20 border-green-200/50 dark:border-green-800/30 hover:bg-green-100/70'}`}
+                    onClick={() => toggleSet(selectedRecs, setSelectedRecs, i)}>
+                    <Checkbox checked={selectedRecs.has(i)} className="mt-0.5 shrink-0" />
                     <span>{r}</span>
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Violation fixes - selectable */}
+          {review.violations.filter(v => v.recommendation).length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+                <Wand2 className="h-3.5 w-3.5 text-blue-500" />
+                Violation Fixes <span className="text-[10px] font-normal">(select to auto-fix)</span>
+              </p>
+              <div className="space-y-1.5">
+                {review.violations.map((v, i) => (
+                  <div key={i} className={`flex items-start gap-2 text-xs p-2 rounded border cursor-pointer transition-colors ${selectedViolations.has(i) ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-400/50' : 'bg-muted/30 border-border/50 hover:bg-muted/50'}`}
+                    onClick={() => toggleSet(selectedViolations, setSelectedViolations, i)}>
+                    <Checkbox checked={selectedViolations.has(i)} className="mt-0.5 shrink-0" />
+                    <div>
+                      <span className="font-medium">{v.rule}:</span> {v.recommendation}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Custom instructions */}
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Additional Instructions (optional)</p>
+            <Textarea
+              value={customInstructions}
+              onChange={(e) => setCustomInstructions(e.target.value)}
+              placeholder="Add any custom instructions for how to enhance the requirement..."
+              className="text-xs h-16 resize-none"
+              data-testid="textarea-custom-instructions"
+            />
+          </div>
+
+          {/* Implement button */}
+          <div className="flex items-center justify-between pt-2 border-t border-border/50">
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="ghost" onClick={selectAll} className="text-xs h-7" data-testid="button-select-all">
+                Select All
+              </Button>
+              <span className="text-xs text-muted-foreground">{totalSelected} selected</span>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => implementMutation.mutate()}
+              disabled={totalSelected === 0 || implementMutation.isPending}
+              className="gap-1.5"
+              data-testid="button-implement-recommendations"
+            >
+              {implementMutation.isPending ? (
+                <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Implementing...</>
+              ) : (
+                <><Wand2 className="h-3.5 w-3.5" /> Implement Selected ({totalSelected})</>
+              )}
+            </Button>
+          </div>
+
+          {/* Changes applied feedback */}
+          {changesApplied && changesApplied.length > 0 && (
+            <div className="rounded-lg border border-green-300 dark:border-green-800 bg-green-50 dark:bg-green-950/20 p-3 space-y-1.5">
+              <p className="text-xs font-medium flex items-center gap-1.5 text-green-700 dark:text-green-400">
+                <CheckCircle className="h-3.5 w-3.5" /> Requirement Enhanced
+              </p>
+              {changesApplied.map((c, i) => (
+                <p key={i} className="text-xs text-green-600 dark:text-green-500 pl-5">- {c}</p>
+              ))}
+              <p className="text-[10px] text-muted-foreground pl-5 pt-1">Re-run the Architect Review to verify the updated requirement.</p>
             </div>
           )}
         </CardContent>

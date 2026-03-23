@@ -1078,6 +1078,96 @@ Follow Salesforce Metadata API v60.0 format.`
     }
   });
 
+  // ====== IMPLEMENT ARCHITECT RECOMMENDATIONS ======
+  app.post("/api/requirements/:id/implement-recommendations", async (req, res) => {
+    const reqId = parseInt(req.params.id);
+    const { selectedRecommendations, selectedChallenges, selectedViolationFixes, customInstructions } = req.body;
+
+    const requirement = storage.getRequirement(reqId);
+    if (!requirement) return res.status(404).json({ error: "Requirement not found" });
+
+    // Build a list of everything the user wants to incorporate
+    const improvements: string[] = [];
+    if (selectedRecommendations?.length) {
+      improvements.push("RECOMMENDATIONS TO IMPLEMENT:");
+      for (const rec of selectedRecommendations) improvements.push(`- ${rec}`);
+    }
+    if (selectedChallenges?.length) {
+      improvements.push("ARCHITECTURAL CHALLENGES TO ADDRESS:");
+      for (const ch of selectedChallenges) improvements.push(`- ${ch}`);
+    }
+    if (selectedViolationFixes?.length) {
+      improvements.push("VIOLATION FIXES TO INCORPORATE:");
+      for (const v of selectedViolationFixes) improvements.push(`- ${v.description}: ${v.recommendation}`);
+    }
+    if (customInstructions) {
+      improvements.push(`ADDITIONAL INSTRUCTIONS: ${customInstructions}`);
+    }
+
+    if (improvements.length === 0) {
+      return res.status(400).json({ error: "No recommendations selected" });
+    }
+
+    try {
+      const message = await getClient().messages.create({
+        model: "claude-sonnet-4-5-20250929",
+        max_tokens: 4096,
+        messages: [{
+          role: "user",
+          content: `You are a Salesforce Technical Architect. A requirement has been through architectural review and the user wants to incorporate specific recommendations and address specific challenges.
+
+ORIGINAL REQUIREMENT:
+Title: ${requirement.title}
+Description: ${requirement.description}
+Category: ${requirement.category}
+
+${improvements.join("\n")}
+
+Rewrite the requirement description to incorporate ALL of the selected recommendations and address ALL of the selected challenges. The rewritten requirement should:
+1. Keep all original functionality intact
+2. Add the recommended improvements naturally into the description
+3. Be specific and implementation-ready (not vague)
+4. Include any new components, fields, validation rules, or automation suggested by the recommendations
+5. Maintain the same tone and style as the original
+
+Respond with JSON only (no markdown, no code fences):
+{
+  "updatedTitle": "Enhanced title if needed, or same as original",
+  "updatedDescription": "The complete rewritten requirement description with all improvements incorporated",
+  "changesApplied": ["Brief list of what was changed or added"]
+}`
+        }]
+      });
+
+      const content = message.content[0];
+      if (content.type !== "text") throw new Error("Unexpected response type");
+
+      let parsed;
+      try {
+        parsed = JSON.parse(content.text);
+      } catch {
+        const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+        else throw new Error("Could not parse AI response");
+      }
+
+      // Update the requirement with the enhanced description
+      const updated = storage.updateRequirement(reqId, {
+        title: parsed.updatedTitle || requirement.title,
+        description: parsed.updatedDescription || requirement.description,
+        status: "draft", // Reset to draft so it can be re-analyzed
+      });
+
+      res.json({
+        requirement: updated,
+        changesApplied: parsed.changesApplied || [],
+        previousDescription: requirement.description,
+      });
+    } catch (error: any) {
+      res.status(422).json({ error: "Failed to implement recommendations", details: error.message });
+    }
+  });
+
   // ====== VALIDATE (checkOnly deploy) ======
   app.post("/api/requirements/:id/validate", (req, res) => {
     const reqId = parseInt(req.params.id);
