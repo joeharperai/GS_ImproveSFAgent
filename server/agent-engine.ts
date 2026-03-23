@@ -482,6 +482,122 @@ HARD RULES:
 // ============================================================
 // PHASE 2: Metadata Generation (Enhanced with Governance)
 // ============================================================
+// ============================================================
+// CHUNKED GENERATION — generates components in small batches
+// to avoid token limit issues with large projects
+// ============================================================
+
+const GENERATION_RULES = `MANDATORY GOVERNANCE RULES FOR CODE GENERATION:
+- Custom Objects: include deploymentStatus=Deployed, enableActivities, enableReports, sharingModel, label, pluralLabel, nameField
+- Custom Fields: include fullName, label, type, required, description, externalId if lookup/master-detail include referenceTo and relationshipName
+- Apex Classes:
+  * API version 60.0
+  * Bulkified code — NO SOQL or DML inside loops
+  * Use "with sharing" keyword
+  * Enforce CRUD/FLS with WITH SECURITY_ENFORCED on all SOQL queries
+  * Use collections (List, Map, Set) for bulk processing
+  * No hardcoded IDs or org-specific values
+  * Include proper error handling (no empty catch blocks)
+- Apex Triggers:
+  * One trigger per object — use handler class pattern
+  * Handle up to 200 records per batch
+  * Include recursion guard
+- Test Classes:
+  * Separate @isTest class with @testSetup method
+  * NEVER use seeAllData=true
+  * Test bulk operations (insert 200 records)
+  * Aim for >90% code coverage
+- Flows: Complete Flow metadata XML with proper processType, before-save for same-record updates
+- Validation Rules: include fullName, active, errorConditionFormula, errorMessage, errorDisplayField
+- LWC: provide JS module + HTML template + js-meta.xml content
+- Permission Sets: principle of least privilege
+- All metadata must be deployable via Metadata API`;
+
+async function generateComponentBatch(
+  requirement: Requirement,
+  batch: any[],
+  allComponentsSummary: string,
+  orgContext?: string
+): Promise<Array<{ type: string; apiName: string; label: string; metadata: string }>> {
+  const message = await getClient().messages.create({
+    model: "claude-sonnet-4-5-20250929",
+    max_tokens: 16384,
+    system: GOVERNANCE_SYSTEM_PROMPT,
+    messages: [{
+      role: "user",
+      content: `You are an expert Salesforce developer. Generate complete, deployable Salesforce metadata for ONLY the components listed below.
+You MUST comply with ALL Salesforce Well-Architected Framework rules.
+
+PROJECT CONTEXT:
+Requirement: ${requirement.title}
+Description: ${requirement.description}
+Full project components (for cross-reference, do NOT generate these — only generate the ones in COMPONENTS TO GENERATE): ${allComponentsSummary}
+${orgContext ? `\n${orgContext}\n` : ""}
+COMPONENTS TO GENERATE (generate ONLY these ${batch.length} components):
+${JSON.stringify(batch, null, 2)}
+
+${GENERATION_RULES}
+
+Respond with JSON only (no markdown, no code fences):
+{
+  "generatedComponents": [
+    {
+      "type": "ComponentType",
+      "apiName": "API_Name",
+      "label": "Human Label",
+      "metadata": "Complete deployable metadata XML or Apex/LWC code as a string"
+    }
+  ]
+}
+
+Generate EXACTLY ${batch.length} components. Each must have complete, deployable metadata.`
+    }]
+  });
+
+  const content = message.content[0];
+  if (content.type !== "text") throw new Error("Unexpected response type from AI");
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content.text);
+  } catch {
+    // Try to extract JSON
+    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        parsed = JSON.parse(jsonMatch[0]);
+      } catch {
+        // Truncation recovery: find last complete component
+        let fixedJson = jsonMatch[0];
+        const openQuotes = (fixedJson.match(/"/g) || []).length;
+        if (openQuotes % 2 !== 0) fixedJson += '"';
+        const lastComplete = fixedJson.lastIndexOf('},');
+        if (lastComplete > 0) {
+          fixedJson = fixedJson.substring(0, lastComplete + 1) + ']}';
+        } else if (!fixedJson.endsWith('}')) {
+          fixedJson += ']}';
+        }
+        try {
+          parsed = JSON.parse(fixedJson);
+        } catch {
+          // Extract individual objects as last resort
+          const matches = content.text.match(/\{\s*"type"\s*:[^}]+"metadata"\s*:\s*"[^"]*"\s*\}/g);
+          if (matches) {
+            parsed = { generatedComponents: matches.map(m => { try { return JSON.parse(m); } catch { return null; } }).filter(Boolean) };
+          } else {
+            console.error("Failed to parse batch response:", content.text.substring(0, 500));
+            throw new Error(`Failed to parse generation response for batch containing: ${batch.map((c: any) => c.apiName).join(', ')}`);
+          }
+        }
+      }
+    } else {
+      throw new Error("No JSON found in generation response");
+    }
+  }
+
+  return parsed.generatedComponents || parsed.components || [];
+}
+
 async function runGeneration(
   runId: number,
   requirement: Requirement,
@@ -494,133 +610,47 @@ async function runGeneration(
   storage.updateRequirement(requirement.id, { status: "generating" });
 
   const components = analysisResult.components || [];
+  const BATCH_SIZE = 3; // Generate 3 components per AI call
+  const totalBatches = Math.ceil(components.length / BATCH_SIZE);
 
-  const message = await getClient().messages.create({
-    model: "claude-sonnet-4-5-20250929",
-    max_tokens: 16384,
-    system: GOVERNANCE_SYSTEM_PROMPT,
-    messages: [{
-      role: "user",
-      content: `You are an expert Salesforce developer. Generate complete, deployable Salesforce metadata.
-IMPORTANT: Keep each component's metadata concise. Do NOT include excessive comments or documentation inside code. Prioritize completeness of all components over verbosity of any single one.
-You MUST comply with ALL Salesforce Well-Architected Framework rules in your system instructions.
+  emitAndLog(runId, emit, makeStep("generating", "plan",
+    `${components.length} components to generate in ${totalBatches} batch${totalBatches > 1 ? 'es' : ''} (${BATCH_SIZE} per batch)`, "info"));
 
-REQUIREMENT: ${requirement.title}
-DESCRIPTION: ${requirement.description}
+  const createdComponents: any[] = [];
+  const allComponentsSummary = components.map((c: any) => `${c.type}: ${c.apiName}`).join(', ');
 
-COMPONENTS TO BUILD:
-${JSON.stringify(components, null, 2)}
-${orgContext ? `\n${orgContext}\n` : ""}
-For each component, generate the complete Salesforce Metadata API XML or Apex/LWC code. Respond with JSON only:
-{
-  "generatedComponents": [
-    {
-      "type": "ComponentType",
-      "apiName": "API_Name",
-      "label": "Label",
-      "metadata": "Complete deployable metadata XML or code as a string"
+  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+    const batchStart = batchIdx * BATCH_SIZE;
+    const batch = components.slice(batchStart, batchStart + BATCH_SIZE);
+    const batchNum = batchIdx + 1;
+
+    emitAndLog(runId, emit, makeStep("generating", "batch_start",
+      `Batch ${batchNum}/${totalBatches}: Generating ${batch.map((c: any) => `${c.type}:${c.apiName}`).join(', ')}...`, "thinking"));
+
+    const batchGenerated = await generateComponentBatch(
+      requirement, batch, allComponentsSummary, orgContext
+    );
+
+    for (const comp of batchGenerated) {
+      const created = storage.createComponent({
+        requirementId: requirement.id,
+        componentType: comp.type,
+        apiName: comp.apiName,
+        label: comp.label,
+        metadataXml: comp.metadata,
+        status: "approved",
+        createdAt: new Date().toISOString(),
+      });
+      createdComponents.push(created);
+      emitAndLog(runId, emit, makeStep(
+        "generating", "component",
+        `Generated ${comp.type}: ${comp.label} (${comp.apiName})`,
+        "success"
+      ));
     }
-  ]
-}
 
-MANDATORY GOVERNANCE RULES FOR CODE GENERATION:
-- Custom Objects: include deploymentStatus=Deployed, enableActivities, enableReports, sharingModel
-- Custom Fields: include label, type, required, description
-- Apex Classes: 
-  * API version 60.0
-  * Bulkified code — NO SOQL or DML inside loops
-  * Use "with sharing" keyword
-  * Enforce CRUD/FLS with WITH SECURITY_ENFORCED on all SOQL queries
-  * Use collections (List, Map, Set) for bulk processing
-  * Include JSDoc-style comments
-  * No hardcoded IDs or org-specific values
-  * Include proper error handling (no empty catch blocks)
-- Apex Triggers:
-  * One trigger per object (consolidate if existing trigger exists)
-  * Use handler class pattern — no business logic in trigger body
-  * Handle up to 200 records per batch
-  * Include recursion guard (static Boolean or Trigger context variable)
-- Test Classes:
-  * Separate @isTest class with @testSetup method
-  * Create test data via factory — NEVER use seeAllData=true
-  * Test bulk operations (insert 200 records)
-  * Test positive, negative, and boundary scenarios
-  * Aim for >90% code coverage with meaningful assertions
-- Flows: 
-  * Use before-save record-triggered Flows for same-record field updates
-  * Complete Flow metadata XML
-  * Use Decision elements for branching logic
-- Validation Rules: include errorMessage, errorDisplayField
-- LWC: provide JS module + HTML template as combined string, wire adapters where appropriate
-- Permission Sets: principle of least privilege
-- All metadata must be deployable via Metadata API with NO manual steps`
-    }]
-  });
-
-  const content = message.content[0];
-  if (content.type !== "text") throw new Error("Unexpected response type");
-
-  let parsed;
-  try {
-    parsed = JSON.parse(content.text);
-  } catch {
-    // Try to extract JSON object
-    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        parsed = JSON.parse(jsonMatch[0]);
-      } catch {
-        // JSON was truncated — try to recover by closing open strings and arrays
-        let fixedJson = jsonMatch[0];
-        // Close any unclosed strings
-        const openQuotes = (fixedJson.match(/"/g) || []).length;
-        if (openQuotes % 2 !== 0) fixedJson += '"';
-        // Try to close the structure
-        if (!fixedJson.endsWith('}')) {
-          // Find the last complete component object
-          const lastCompleteObj = fixedJson.lastIndexOf('},');
-          if (lastCompleteObj > 0) {
-            fixedJson = fixedJson.substring(0, lastCompleteObj + 1) + ']}';
-          } else {
-            fixedJson += ']}' ;
-          }
-        }
-        try {
-          parsed = JSON.parse(fixedJson);
-        } catch {
-          // Last resort: extract individual component objects
-          const componentMatches = content.text.match(/\{\s*"type"\s*:.*?"metadata"\s*:.*?\}/gs);
-          if (componentMatches && componentMatches.length > 0) {
-            parsed = { generatedComponents: componentMatches.map(m => { try { return JSON.parse(m); } catch { return null; } }).filter(Boolean) };
-          } else {
-            throw new Error("Could not parse metadata generation response — JSON was truncated. Try a simpler requirement with fewer components.");
-          }
-        }
-      }
-    } else {
-      throw new Error("Could not parse metadata generation response");
-    }
-  }
-
-  const generated = parsed.generatedComponents || parsed.components || [];
-  const createdComponents = [];
-
-  for (const comp of generated) {
-    const created = storage.createComponent({
-      requirementId: requirement.id,
-      componentType: comp.type,
-      apiName: comp.apiName,
-      label: comp.label,
-      metadataXml: comp.metadata,
-      status: "approved", // Auto-approved in agent mode
-      createdAt: new Date().toISOString(),
-    });
-    createdComponents.push(created);
-    emitAndLog(runId, emit, makeStep(
-      "generating", "component",
-      `Generated ${comp.type}: ${comp.label} (${comp.apiName})`,
-      "success"
-    ));
+    emitAndLog(runId, emit, makeStep("generating", "batch_complete",
+      `Batch ${batchNum}/${totalBatches} complete — ${batchGenerated.length} components generated`, "success"));
   }
 
   // Post-generation governance validation
