@@ -245,7 +245,7 @@ export async function runArchitectReview(
 
   const message = await getClient().messages.create({
     model: "claude-sonnet-4-5-20250929",
-    max_tokens: 6144,
+    max_tokens: 16384,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
       role: "user",
@@ -397,11 +397,12 @@ async function runAnalysis(
 
   const message = await getClient().messages.create({
     model: "claude-sonnet-4-5-20250929",
-    max_tokens: 4096,
+    max_tokens: 16384,
     system: GOVERNANCE_SYSTEM_PROMPT,
     messages: [{
       role: "user",
       content: `You are an expert Salesforce architect. Analyze this requirement and produce a deployment plan.
+IMPORTANT: Keep component descriptions brief (1 sentence each). Focus on completeness over verbosity.
 You must COMPLY with ALL Salesforce Well-Architected Framework rules and governance constraints provided in your system instructions.
 ${warningContext}${fscContext}
 
@@ -452,8 +453,51 @@ HARD RULES:
     parsed = JSON.parse(content.text);
   } catch {
     const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-    else throw new Error("Could not parse AI analysis response");
+    if (jsonMatch) {
+      try {
+        parsed = JSON.parse(jsonMatch[0]);
+      } catch {
+        // Truncation recovery for analysis JSON
+        let fixedJson = jsonMatch[0];
+        const openQuotes = (fixedJson.match(/"/g) || []).length;
+        if (openQuotes % 2 !== 0) fixedJson += '"';
+        // Close unclosed arrays and objects
+        const openBrackets = (fixedJson.match(/\[/g) || []).length - (fixedJson.match(/\]/g) || []).length;
+        const openBraces = (fixedJson.match(/\{/g) || []).length - (fixedJson.match(/\}/g) || []).length;
+        // Find last complete array element
+        const lastComma = fixedJson.lastIndexOf(',');
+        if (lastComma > fixedJson.length - 200) {
+          fixedJson = fixedJson.substring(0, lastComma);
+        }
+        fixedJson += ']'.repeat(Math.max(0, openBrackets)) + '}'.repeat(Math.max(0, openBraces));
+        try {
+          parsed = JSON.parse(fixedJson);
+        } catch {
+          // Minimal fallback — extract what we can
+          const summaryMatch = content.text.match(/"summary"\s*:\s*"([^"]*)"/);  
+          const componentsMatch = content.text.match(/"components"\s*:\s*\[(.*?)\]/s);
+          parsed = {
+            summary: summaryMatch ? summaryMatch[1] : "Analysis completed with truncation — some details may be missing",
+            components: [],
+            dependencies: [],
+            bestPractices: [],
+            risks: [],
+            estimatedEffort: "Unknown",
+            deployOrder: [],
+            governanceNotes: [],
+          };
+          // Try to extract individual components
+          if (componentsMatch) {
+            const compMatches = componentsMatch[1].match(/\{[^}]+\}/g);
+            if (compMatches) {
+              parsed.components = compMatches.map((m: string) => { try { return JSON.parse(m); } catch { return null; } }).filter(Boolean);
+            }
+          }
+        }
+      }
+    } else {
+      throw new Error("Could not parse AI analysis response");
+    }
   }
 
   // Save to analyses table
